@@ -1,0 +1,61 @@
+{
+  "doctor_info": {
+    "name": "Dr. Sarah Johnson",
+    "specialty": "General Practice",
+    "email": "sjohnson@healthcareplus.com",
+    "phone": "+1-555-123-4567"
+  },
+  "working_hours": {
+    "monday": {
+      "start": "08:00",
+      "end": "18:00",
+      "lunch_break": {
+        "start": "12:00",
+        "end": "13:00"
+      }
+    },
+    "tuesday": {
+      "start": "08:00",
+      "end": "18:00",
+      "lunch_break": {
+        "start": "12:00",
+        "end": "13:00"
+      }
+    },
+    "wednesday": {
+      "start": "08:00",
+      "end": "18:00",
+      "lunch_break": {
+        "start": "12:00",
+        "end": "13:00"
+      }
+    },
+    "thursday": {
+      "start": "08:00",
+      "end": "18:00",
+      "lunch_break": {
+        "start": "12:00",
+        "end": "13:00"
+      }
+    },
+    "friday": {
+      "start": "08:00",
+      "end": "18:00",
+      "lunch_break": {
+        "start": "12:00",
+        "end": "13:00"
+      }
+    },
+    "saturday": {
+      "start": "09:00",
+      "end": "14:00",
+      "lunch_break": null
+    },
+    "sunday": null
+  },
+  "timezone": "America/New_York",
+  "slot_duration": 30,
+  "buffer_time": 15,
+  "existing_appointments": []
+}
+

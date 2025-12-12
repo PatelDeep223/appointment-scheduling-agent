@@ -1,0 +1,102 @@
+{
+    "clinic_details": {
+      "name": "HealthCare Plus Clinic",
+      "address": "123 Medical Center Drive, Suite 400, Boston, MA 02115",
+      "phone": "+1-555-123-4567",
+      "email": "info@healthcareplus.com",
+      "hours": {
+        "monday_friday": "8:00 AM - 6:00 PM",
+        "saturday": "9:00 AM - 2:00 PM",
+        "sunday": "Closed"
+      },
+      "directions": "Located in the Medical District, accessible via Red Line (Medical Center stop). Free parking available in the adjacent garage.",
+      "parking": "Free parking in Building B garage. Validation available at reception. Handicap accessible parking on Level 1."
+    },
+    "insurance_billing": {
+      "accepted_insurance": [
+        "Blue Cross Blue Shield",
+        "Aetna",
+        "Cigna",
+        "UnitedHealthcare",
+        "Medicare",
+        "Medicaid",
+        "Humana"
+      ],
+      "payment_methods": [
+        "Cash",
+        "Credit/Debit cards (Visa, MasterCard, Amex)",
+        "HSA/FSA cards",
+        "Personal checks",
+        "Payment plans available"
+      ],
+      "billing_policy": "Payment is due at time of service. We will bill your insurance directly. Co-pays are collected at check-in. For self-pay patients, we offer a 20% discount for payment in full at time of service."
+    },
+    "visit_preparation": {
+      "first_visit_documents": [
+        "Valid photo ID (driver's license or passport)",
+        "Insurance card (front and back)",
+        "List of current medications",
+        "Medical history form (can be filled online)",
+        "Referral letter if required by insurance"
+      ],
+      "what_to_bring": [
+        "Insurance information",
+        "Photo ID",
+        "List of medications and allergies",
+        "Previous medical records if available",
+        "Payment method for co-pay"
+      ],
+      "preparation_tips": "Please arrive 15 minutes early for your first visit to complete paperwork. Bring a list of questions or concerns you'd like to discuss with the doctor."
+    },
+    "policies": {
+      "cancellation_policy": "Please provide at least 24 hours notice for cancellations. Late cancellations or no-shows may incur a $50 fee. We understand emergencies happen - please call us to discuss.",
+      "late_arrival_policy": "Please arrive 10-15 minutes before your scheduled appointment. If you arrive more than 15 minutes late, we may need to reschedule your appointment to avoid delays for other patients.",
+      "covid_protocols": "Masks are optional but available upon request. Hand sanitizer stations throughout the clinic. We maintain enhanced cleaning protocols. Telehealth appointments available for eligible visits.",
+      "prescription_refills": "Request refills through the patient portal or call at least 48 hours in advance. Refills require an active prescription and may need a follow-up visit.",
+      "medical_records": "You can request medical records through our patient portal or by submitting a written request. Records are typically available within 7-10 business days."
+    },
+    "appointment_types": {
+      "general_consultation": {
+        "duration": "30 minutes",
+        "description": "Standard visit for symptoms, checkups, or follow-up care",
+        "cost_estimate": "$150-200 (before insurance)"
+      },
+      "follow_up": {
+        "duration": "15 minutes",
+        "description": "Brief follow-up for ongoing treatment or test results",
+        "cost_estimate": "$75-100 (before insurance)"
+      },
+      "physical_exam": {
+        "duration": "45 minutes",
+        "description": "Comprehensive annual physical examination",
+        "cost_estimate": "$200-300 (often covered by insurance)"
+      },
+      "specialist_consultation": {
+        "duration": "60 minutes",
+        "description": "Extended consultation for complex medical issues",
+        "cost_estimate": "$250-400 (before insurance)"
+      }
+    },
+    "common_questions": [
+      {
+        "question": "Do you accept walk-ins?",
+        "answer": "We primarily operate by appointment to minimize wait times. However, we do accept walk-ins for urgent matters between 9 AM - 11 AM on weekdays, though wait times may vary."
+      },
+      {
+        "question": "Can I get same-day appointments?",
+        "answer": "We try to accommodate same-day appointments for urgent needs. Please call us early in the morning for the best availability. For non-urgent matters, we typically have availability within 2-3 days."
+      },
+      {
+        "question": "Do you offer telehealth visits?",
+        "answer": "Yes! We offer telehealth appointments for follow-ups, medication management, and many other visit types. Ask about telehealth when scheduling."
+      },
+      {
+        "question": "How do I access the patient portal?",
+        "answer": "Visit our website and click 'Patient Portal' to register. You'll need your date of birth and an activation code (provided at your first visit). Through the portal you can view test results, request refills, message your doctor, and pay bills."
+      },
+      {
+        "question": "What if I need to see a specialist?",
+        "answer": "We can provide referrals to trusted specialists in our network. Your doctor will discuss this during your visit and help coordinate your care."
+      }
+    ]
+  }
