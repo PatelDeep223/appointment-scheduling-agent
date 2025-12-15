@@ -1,6 +1,6 @@
 """
 Script to check database connection and table creation
-Run this to verify PostgreSQL setup
+Run this to verify MySQL setup
 """
 
 import os
@@ -23,7 +23,7 @@ def check_database():
     try:
         # Test connection
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT version()"))
+            result = conn.execute(text("SELECT VERSION()"))
             version = result.fetchone()[0]
             print(f"✅ Connected to database")
             print(f"   Version: {version[:50]}...")

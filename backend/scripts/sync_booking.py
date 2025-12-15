@@ -122,7 +122,7 @@ async def sync_booking_from_invitee_id(invitee_id: str, days_back: int = 30, max
                                     }
                                     
                                     # Send to webhook endpoint
-                                    webhook_url = os.getenv("WEBHOOK_URL", "http://localhost:8000/api/calendly/webhook")
+                                    webhook_url = os.getenv("WEBHOOK_URL", "https://susy-cany-alida.ngrok-free.dev/api/calendly/webhook")
                                     try:
                                         webhook_response = await client.post(
                                             webhook_url,

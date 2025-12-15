@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
 import { MessageCircle, X, Send, Minimize2 } from 'lucide-react'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
@@ -9,7 +9,11 @@ import AppointmentConfirmation from './AppointmentConfirmation'
 import TimeSlotButtons from './TimeSlotButtons'
 import { apiService, ChatMessage as ChatMessageType, TimeSlot } from '@/lib/api'
 
-export default function FloatingChatWidget() {
+export interface FloatingChatWidgetRef {
+  sendMessage: (message: string) => void
+}
+
+const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
   const [isOpen, setIsOpen] = useState(false)
   const [isMinimized, setIsMinimized] = useState(false)
   const [messages, setMessages] = useState<ChatMessageType[]>([])
@@ -30,15 +34,18 @@ export default function FloatingChatWidget() {
     scrollToBottom()
   }, [messages])
 
+  const [isWaitingForConfirmation, setIsWaitingForConfirmation] = useState(false)
+
   // Poll for booking status updates if there's a pending booking
   useEffect(() => {
     const checkBookingStatus = async () => {
       if (!appointmentDetails?.booking_id) return
       
       const isPending = appointmentDetails.status === 'pending' || 
+                       appointmentDetails.status === 'ready' ||
                        appointmentDetails.booking_id?.startsWith('TEMP-')
       
-      if (!isPending) {
+      if (!isPending && !isWaitingForConfirmation) {
         // Booking is confirmed, stop polling
         if (pollingIntervalRef.current) {
           clearInterval(pollingIntervalRef.current)
@@ -48,14 +55,72 @@ export default function FloatingChatWidget() {
       }
 
       try {
+        console.log(`[Polling] Checking status for booking: ${appointmentDetails.booking_id}`)
         const updatedBooking = await apiService.getAppointmentStatus(appointmentDetails.booking_id)
         
+        if (!updatedBooking) {
+          console.warn('[Polling] No booking data returned')
+          return
+        }
+        
         // Update if status changed from pending to confirmed
-        if (updatedBooking && updatedBooking.status !== 'pending' && !updatedBooking.booking_id?.startsWith('TEMP-')) {
+        const wasPending = appointmentDetails.status === 'pending' || 
+                          appointmentDetails.status === 'ready' ||
+                          appointmentDetails.booking_id?.startsWith('TEMP-')
+        const isNowConfirmed = updatedBooking && 
+                               updatedBooking.status === 'confirmed' && 
+                               !updatedBooking.booking_id?.startsWith('TEMP-')
+        
+        // Check if this is a direct booking (immediately confirmed, no scheduling_link)
+        const isDirectBooking = isNowConfirmed && !updatedBooking.scheduling_link
+        
+        if (wasPending && isNowConfirmed) {
+          // Booking just got confirmed!
           setAppointmentDetails(updatedBooking)
+          setIsWaitingForConfirmation(false)
           console.log('✅ Booking confirmed!', updatedBooking)
+          
+          // Show success message
+          const bookingMethod = isDirectBooking 
+            ? 'Your appointment was booked directly and is confirmed!'
+            : 'Your appointment has been confirmed!'
+          
+          const successMessage: ChatMessageType = {
+            role: 'assistant',
+            content: `🎉 Great news! ${bookingMethod}\n\nYour booking details:\n• Date: ${updatedBooking.date || appointmentDetails.date}\n• Time: ${updatedBooking.time || appointmentDetails.time}\n• Confirmation Code: ${updatedBooking.confirmation_code || appointmentDetails.confirmation_code}\n\nYou should receive a confirmation email shortly.${isDirectBooking && (updatedBooking.cancel_url || updatedBooking.reschedule_url) ? '\n\nYou can reschedule or cancel your appointment using the buttons below.' : ''}`,
+            timestamp: new Date().toISOString(),
+          }
+          setMessages((prev) => [...prev, successMessage])
+          
+          // Stop polling
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current)
+            pollingIntervalRef.current = null
+          }
         } else if (updatedBooking && updatedBooking.status !== appointmentDetails.status) {
+          // Status changed (e.g., pending -> confirmed)
+          console.log(`📊 Booking status changed: ${appointmentDetails.status} → ${updatedBooking.status}`)
           setAppointmentDetails(updatedBooking)
+          
+          // If it became confirmed, show success message
+          if (updatedBooking.status === 'confirmed' && appointmentDetails.status === 'pending') {
+            const successMessage: ChatMessageType = {
+              role: 'assistant',
+              content: `🎉 Great news! Your appointment has been confirmed!\n\nYour booking details:\n• Date: ${updatedBooking.date || appointmentDetails.date}\n• Time: ${updatedBooking.time || appointmentDetails.time}\n• Confirmation Code: ${updatedBooking.confirmation_code || appointmentDetails.confirmation_code}\n\nYou should receive a confirmation email shortly.`,
+              timestamp: new Date().toISOString(),
+            }
+            setMessages((prev) => [...prev, successMessage])
+            setIsWaitingForConfirmation(false)
+            
+            // Stop polling
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current)
+              pollingIntervalRef.current = null
+            }
+          }
+        } else {
+          // Status hasn't changed, just log for debugging
+          console.log(`📊 Booking status unchanged: ${updatedBooking.status} (still ${appointmentDetails.status === 'pending' ? 'waiting for confirmation' : 'confirmed'})`)
         }
       } catch (error) {
         // Silently fail - booking might not exist yet or webhook hasn't arrived
@@ -63,17 +128,22 @@ export default function FloatingChatWidget() {
       }
     }
 
-    // Poll every 5 seconds for pending bookings
+    // Determine polling interval based on whether user is actively completing booking
+    const pollInterval = isWaitingForConfirmation ? 3000 : 5000 // Poll every 3s if waiting, 5s otherwise
+
+    // Poll for pending bookings
     if (appointmentDetails?.booking_id) {
       const isPending = appointmentDetails.status === 'pending' || 
+                       appointmentDetails.status === 'ready' ||
                        appointmentDetails.booking_id?.startsWith('TEMP-')
       
-      if (isPending) {
-        // Initial check after 3 seconds
-        const initialTimeout = setTimeout(checkBookingStatus, 3000)
+      if (isPending || isWaitingForConfirmation) {
+        // Initial check after 2 seconds (faster if waiting)
+        const initialDelay = isWaitingForConfirmation ? 2000 : 3000
+        const initialTimeout = setTimeout(checkBookingStatus, initialDelay)
         
-        // Then poll every 5 seconds
-        pollingIntervalRef.current = setInterval(checkBookingStatus, 5000)
+        // Then poll at appropriate interval
+        pollingIntervalRef.current = setInterval(checkBookingStatus, pollInterval)
         
         return () => {
           clearTimeout(initialTimeout)
@@ -91,10 +161,16 @@ export default function FloatingChatWidget() {
         pollingIntervalRef.current = null
       }
     }
-  }, [appointmentDetails?.booking_id, appointmentDetails?.status])
+  }, [appointmentDetails?.booking_id, appointmentDetails?.status, isWaitingForConfirmation])
 
   const handleSendMessage = async (message: string) => {
     if (!message.trim() || isLoading) return
+
+    // Ensure chat is open when sending message
+    if (!isOpen) {
+      setIsOpen(true)
+      setIsMinimized(false)
+    }
 
     // Add user message
     const userMessage: ChatMessageType = {
@@ -106,7 +182,9 @@ export default function FloatingChatWidget() {
     setIsLoading(true)
 
     try {
-      const response = await apiService.sendMessage(message, sessionId)
+      // Get user timezone and send with message
+      const userTimezone = apiService.getUserTimezone()
+      const response = await apiService.sendMessage(message, sessionId, userTimezone)
 
       // Add assistant message
       const assistantMessage: ChatMessageType = {
@@ -130,6 +208,11 @@ export default function FloatingChatWidget() {
       setIsLoading(false)
     }
   }
+
+  // Expose sendMessage method via ref
+  useImperativeHandle(ref, () => ({
+    sendMessage: handleSendMessage,
+  }))
 
   // Suggestion click handler removed - using natural conversation
 
@@ -220,7 +303,24 @@ export default function FloatingChatWidget() {
             ))}
 
             {appointmentDetails && (
-              <AppointmentConfirmation appointmentDetails={appointmentDetails} />
+              <AppointmentConfirmation 
+                appointmentDetails={appointmentDetails}
+                onBookingComplete={() => {
+                  // Start aggressive polling when user opens booking page
+                  setIsWaitingForConfirmation(true)
+                  
+                  // Also refresh booking status immediately
+                  if (appointmentDetails.booking_id) {
+                    apiService.getAppointmentStatus(appointmentDetails.booking_id)
+                      .then(updated => {
+                        if (updated) {
+                          setAppointmentDetails(updated)
+                        }
+                      })
+                      .catch(err => console.debug('Error refreshing booking:', err))
+                  }
+                }}
+              />
             )}
 
             {isLoading && (
@@ -253,5 +353,9 @@ export default function FloatingChatWidget() {
       )}
     </div>
   )
-}
+})
+
+FloatingChatWidget.displayName = 'FloatingChatWidget'
+
+export default FloatingChatWidget
 

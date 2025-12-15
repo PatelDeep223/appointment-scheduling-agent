@@ -1,5 +1,5 @@
 """
-Test PostgreSQL database connection
+Test MySQL database connection
 Run this to verify your database credentials are correct
 """
 
@@ -18,14 +18,14 @@ from sqlalchemy import create_engine, text
 
 def test_connection():
     """Test database connection"""
-    print("🔍 Testing PostgreSQL Connection...")
+    print("🔍 Testing MySQL Connection...")
     print("")
     
     # Get connection details
     database_url = os.getenv("DATABASE_URL")
     db_host = os.getenv("DB_HOST", "localhost")
-    db_port = os.getenv("DB_PORT", "5432")
-    db_user = os.getenv("DB_USER", "postgres")
+    db_port = os.getenv("DB_PORT", "3306")
+    db_user = os.getenv("DB_USER", "root")
     db_password = os.getenv("DB_PASSWORD", "")
     db_name = os.getenv("DB_NAME", "appointments_db")
     
@@ -34,21 +34,21 @@ def test_connection():
         if db_password:
             # URL encode password to handle special characters like @, #, etc.
             encoded_password = quote_plus(db_password)
-            database_url = f"postgresql://{db_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
+            database_url = f"mysql+pymysql://{db_user}:{encoded_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
         else:
             print("❌ No DATABASE_URL or DB_PASSWORD found in .env file")
             print("")
             print("Please set one of these in your .env file:")
-            print("  DATABASE_URL=postgresql://user:password@host:port/database")
+            print("  DATABASE_URL=mysql+pymysql://user:password@host:port/database?charset=utf8mb4")
             print("  OR")
             print("  DB_HOST=localhost")
-            print("  DB_PORT=5432")
+            print("  DB_PORT=3306")
             print("  DB_USER=your_user")
             print("  DB_PASSWORD=your_password")
             print("  DB_NAME=your_database")
             return False
     
-    print(f"Connection String: postgresql://{db_user}:***@{db_host}:{db_port}/{db_name}")
+    print(f"Connection String: mysql+pymysql://{db_user}:***@{db_host}:{db_port}/{db_name}")
     print("")
     
     try:
@@ -58,20 +58,20 @@ def test_connection():
         # Test connection
         print("Testing connection...")
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT version()"))
+            result = conn.execute(text("SELECT VERSION()"))
             version = result.fetchone()[0]
             print(f"✅ Connection successful!")
-            print(f"   PostgreSQL version: {version[:60]}...")
+            print(f"   MySQL version: {version[:60]}...")
             print("")
             
             # Check if database exists
-            result = conn.execute(text("SELECT current_database()"))
+            result = conn.execute(text("SELECT DATABASE()"))
             current_db = result.fetchone()[0]
             print(f"✅ Connected to database: {current_db}")
             print("")
             
             # Check if user has permissions
-            result = conn.execute(text("SELECT current_user"))
+            result = conn.execute(text("SELECT USER()"))
             current_user = result.fetchone()[0]
             print(f"✅ Connected as user: {current_user}")
             print("")
@@ -90,11 +90,11 @@ def test_connection():
         print(f"❌ Connection failed: {str(e)}")
         print("")
         print("Troubleshooting:")
-        print("1. Check if PostgreSQL is running: sudo systemctl status postgresql")
+        print("1. Check if MySQL is running: sudo service mysql status")
         print("2. Verify credentials in .env file")
-        print("3. Check if user exists: sudo -u postgres psql -c '\\du'")
-        print("4. Check if database exists: sudo -u postgres psql -c '\\l'")
-        print("5. Verify pg_hba.conf allows connections")
+        print("3. Check if user exists: mysql -u root -p -e \"SELECT User FROM mysql.user;\"")
+        print("4. Check if database exists: mysql -u root -p -e \"SHOW DATABASES;\"")
+        print("5. Verify MySQL bind-address in /etc/mysql/mysql.conf.d/mysqld.cnf")
         return False
 
 if __name__ == "__main__":

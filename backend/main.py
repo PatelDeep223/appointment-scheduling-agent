@@ -138,10 +138,15 @@ async def chat(request: ChatRequest):
                 "patient_info": {},
                 "available_slots": [],
                 "selected_slot": None,
-                "conversation_history": []
+                "conversation_history": [],
+                "timezone": None
             }
         
         session = sessions[session_id]
+        
+        # Update timezone if provided
+        if request.timezone:
+            session["timezone"] = request.timezone
         
         # Add user message to history
         session["conversation_history"].append({
@@ -189,12 +194,63 @@ async def chat(request: ChatRequest):
         if "current_system_prompt" in response:
             session["current_system_prompt"] = response.get("current_system_prompt")
         
+        # Convert available slots to user's timezone if needed
+        available_slots = response.get("available_slots")
+        if available_slots and session.get("timezone"):
+            try:
+                try:
+                    from utils.timezone_utils import convert_slot_to_timezone, DEFAULT_CLINIC_TIMEZONE
+                except ImportError:
+                    from backend.utils.timezone_utils import convert_slot_to_timezone, DEFAULT_CLINIC_TIMEZONE
+                
+                # Convert each slot individually (each may have different date)
+                converted_slots = []
+                for slot in available_slots:
+                    # Get date from slot - prefer full_date (YYYY-MM-DD format)
+                    date_str = slot.get("full_date")
+                    
+                    # If full_date not available, try to parse from date field or use today
+                    if not date_str:
+                        date_str = slot.get("date")
+                        # If date is formatted like "Tuesday, December 16", we need to extract or use today
+                        if date_str and not date_str.startswith("202"):
+                            # It's a formatted date, use today as fallback
+                            # In production, you might want to parse this, but for now use today
+                            date_str = datetime.now().strftime("%Y-%m-%d")
+                    
+                    # Final fallback to today
+                    if not date_str:
+                        date_str = datetime.now().strftime("%Y-%m-%d")
+                    
+                    # Convert this slot to user timezone
+                    try:
+                        converted_slot = convert_slot_to_timezone(
+                            slot,
+                            date_str,
+                            from_tz=DEFAULT_CLINIC_TIMEZONE,
+                            to_tz=session["timezone"]
+                        )
+                        converted_slots.append(converted_slot)
+                    except Exception as slot_error:
+                        print(f"⚠️ Error converting slot to timezone: {slot_error}, using original slot")
+                        # Add timezone info but keep original times
+                        slot["timezone"] = session["timezone"]
+                        converted_slots.append(slot)
+                
+                available_slots = converted_slots
+            except Exception as e:
+                print(f"⚠️ Error converting slots to timezone: {e}")
+                # Continue with original slots if conversion fails
+                # Add timezone info to slots anyway
+                for slot in available_slots:
+                    slot["timezone"] = session.get("timezone")
+        
         return ChatResponse(
             message=response["message"],
             context=session["context"],
             suggestions=response.get("suggestions", []),
             appointment_details=response.get("appointment_details"),
-            available_slots=response.get("available_slots")  # Include structured slots for UI
+            available_slots=available_slots  # Include structured slots for UI (timezone converted)
         )
         
     except Exception as e:
@@ -474,7 +530,19 @@ async def calendly_webhook(request: Request):
         
         # Get webhook payload
         body = await request.body()
-        webhook_data = json.loads(body)
+        
+        # Handle empty body
+        if not body or len(body) == 0:
+            print(f"⚠️  Empty webhook payload received from {client_ip}")
+            raise HTTPException(status_code=400, detail="Empty webhook payload")
+        
+        # Try to parse JSON
+        try:
+            webhook_data = json.loads(body)
+        except json.JSONDecodeError as e:
+            print(f"❌ Invalid JSON in webhook payload: {str(e)}")
+            print(f"   Body content (first 500 chars): {body[:500]}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
         
         print(f"\n{'='*60}")
         print(f"📥 Received Calendly webhook:")

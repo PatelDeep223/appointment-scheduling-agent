@@ -549,31 +549,113 @@ class SchedulingAgent:
         available_slots = session.get("available_slots", [])
         selected_slot = None
         
+        # Extract date and time from user's message for better matching
+        user_date_parts = []
+        user_time = None
+        
+        # Try to extract date patterns (e.g., "Wednesday, December 17", "Dec 17", "12/17", etc.)
+        date_patterns = [
+            r'(monday|tuesday|wednesday|thursday|friday|saturday|sunday)[,\s]+(january|february|march|april|may|june|july|august|september|october|november|december)[,\s]+(\d{1,2})',  # "Wednesday, December 17"
+            r'(january|february|march|april|may|june|july|august|september|october|november|december)[,\s]+(\d{1,2})',  # "December 17"
+            r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?',  # "12/17" or "12/17/2024"
+        ]
+        
+        for pattern in date_patterns:
+            date_match = re.search(pattern, lower_msg, re.IGNORECASE)
+            if date_match:
+                user_date_parts = list(date_match.groups())
+                break
+        
+        # Extract time pattern (e.g., "12:00 PM", "12 PM", "12:00pm")
+        time_match = re.search(r'(\d{1,2}):?(\d{2})?\s*(am|pm)', lower_msg, re.IGNORECASE)
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2)) if time_match.group(2) else 0
+            period = time_match.group(3).upper()
+            # Normalize to 24-hour format for comparison
+            if period == "PM" and hour != 12:
+                hour += 12
+            elif period == "AM" and hour == 12:
+                hour = 0
+            user_time = f"{hour:02d}:{minute:02d}"
+        
         # First, try exact match with structured slot data (from clickable buttons)
-        # Check if message contains slot identifier or matches display text
+        # Prioritize full display text match
         for slot in available_slots:
             slot_display = slot.get("display_text", "").lower()
-            slot_time = slot.get("start_time", "").lower()
-            slot_date = slot.get("date", "").lower()
-            
-            # Check if message matches any part of the slot
-            if (slot_time in lower_msg or 
-                slot_date in lower_msg or 
-                slot_display in lower_msg or
-                lower_msg in slot_display):
+            # Exact display text match is highest priority
+            if slot_display and slot_display in lower_msg:
                 selected_slot = slot
                 break
         
-        # If no match, try to match just time pattern
-        if not selected_slot and available_slots:
-            time_match = re.search(r'(\d{1,2}):?(\d{2})?\s*(am|pm)?', lower_msg, re.IGNORECASE)
-            if time_match:
-                search_time = time_match.group(0)
-                for slot in available_slots:
-                    slot_time = slot.get("start_time", "").lower()
-                    if search_time in slot_time:
+        # If no exact display match, try matching date + time together
+        if not selected_slot and user_date_parts and user_time:
+            for slot in available_slots:
+                slot_date = slot.get("date", "").lower()
+                slot_full_date = slot.get("full_date", "")  # YYYY-MM-DD format
+                slot_raw_time = slot.get("raw_time", "")  # HH:MM format
+                slot_time = slot.get("start_time", "").lower()
+                
+                # Check if date matches (using both formatted date and full_date)
+                date_matches = False
+                if slot_date:
+                    # Check if user's date parts appear in slot_date
+                    date_match_count = sum(1 for part in user_date_parts if part and part.lower() in slot_date)
+                    if date_match_count >= 2:  # At least 2 parts match (e.g., "december" and "17")
+                        date_matches = True
+                
+                # Check if time matches
+                time_matches = False
+                if slot_raw_time and user_time:
+                    # Compare raw times (HH:MM format)
+                    time_matches = (slot_raw_time == user_time)
+                elif slot_time and user_time:
+                    # Fallback: check if time appears in formatted time
+                    hour_str = str(int(user_time.split(":")[0]))
+                    period = "pm" if int(user_time.split(":")[0]) >= 12 else "am"
+                    if hour_str in slot_time and period in slot_time:
+                        time_matches = True
+                
+                # Both date and time must match
+                if date_matches and time_matches:
+                    selected_slot = slot
+                    break
+        
+        # If still no match, try partial matching (less strict)
+        if not selected_slot:
+            for slot in available_slots:
+                slot_display = slot.get("display_text", "").lower()
+                slot_time = slot.get("start_time", "").lower()
+                slot_date = slot.get("date", "").lower()
+                
+                # Check if message matches any part of the slot (but require both date and time to be present)
+                has_date_match = slot_date and any(part in slot_date for part in user_date_parts if part)
+                has_time_match = slot_time and user_time and (
+                    user_time.split(":")[0] in slot_time or 
+                    slot_time in lower_msg
+                )
+                
+                # If we have both date and time in user message, require both to match
+                if user_date_parts and user_time:
+                    if has_date_match and has_time_match:
                         selected_slot = slot
                         break
+                # Otherwise, fall back to any match
+                elif (slot_time in lower_msg or 
+                      slot_date in lower_msg or 
+                      slot_display in lower_msg or
+                      lower_msg in slot_display):
+                    selected_slot = slot
+                    break
+        
+        # If no match, try to match just time pattern (last resort)
+        if not selected_slot and available_slots and user_time:
+            for slot in available_slots:
+                slot_raw_time = slot.get("raw_time", "")
+                slot_time = slot.get("start_time", "").lower()
+                if slot_raw_time == user_time or (slot_time and user_time.split(":")[0] in slot_time):
+                    selected_slot = slot
+                    break
         
         if not selected_slot:
             # Show available slots again with clearer format
@@ -639,15 +721,127 @@ class SchedulingAgent:
     ) -> Dict[str, Any]:
         """Collect and validate patient information - handles multiple formats"""
         
-        # Extract information with improved patterns
+        # Get existing patient info from session (preserve what was already collected)
+        patient_info = session.get("patient_info", {})
+        
+        # Debug: Log what we already have
+        print(f"📋 Current patient_info in session: {patient_info}")
+        
+        # Check if user is saying "done" or indicating completion
+        lower_msg = message.lower().strip()
+        completion_signals = ['done', 'that\'s all', 'that\'s it', 'finished', 'complete', 'all set', 'ready', 'ok', 'okay', 'yes', 'sure', 'go ahead', 'proceed']
+        is_completion = any(signal in lower_msg for signal in completion_signals)
+        
+        if is_completion:
+            print(f"✅ User sent completion signal: '{message}'")
+        
+        # If user says "done" and we have all info, proceed to booking
+        if is_completion:
+            required_fields = ["name", "email", "phone"]
+            missing_fields = [f for f in required_fields if f not in patient_info or not patient_info[f]]
+            
+            if not missing_fields:
+                # All info collected, proceed to book
+                selected_slot = session.get("selected_slot")
+                if selected_slot:
+                    appointment_type = session.get("appointment_type", "consultation")
+                    
+                    try:
+                        # Book appointment
+                        api_start_time = selected_slot.get("raw_time")
+                        if not api_start_time:
+                            time_str = selected_slot["start_time"]
+                            try:
+                                if "AM" in time_str.upper() or "PM" in time_str.upper():
+                                    time_obj = datetime.strptime(time_str.upper().strip(), "%I:%M %p")
+                                    api_start_time = time_obj.strftime("%H:%M")
+                                else:
+                                    api_start_time = time_str
+                            except:
+                                api_start_time = "10:00"
+                        
+                        booking = await calendly_client.create_booking(
+                            appointment_type=appointment_type,
+                            date=selected_slot["full_date"],
+                            start_time=api_start_time,
+                            patient_name=patient_info["name"],
+                            patient_email=patient_info["email"],
+                            patient_phone=patient_info["phone"],
+                            reason=session.get("reason", "General consultation")
+                        )
+                        
+                        # Return booking response (same as below)
+                        appt_info = self.appointment_types[appointment_type]
+                        scheduling_link = booking.get('scheduling_link')
+                        booking_status = booking.get('status', 'confirmed')
+                        booking_id = booking.get('booking_id', '')
+                        
+                        response = f"Perfect! I've got everything I need. "
+                        
+                        if booking_status == 'pending' or booking_id.startswith('TEMP-'):
+                            response += f"I've prepared your appointment booking. "
+                            if scheduling_link:
+                                response += f"Please click the link below to complete your booking in Calendly. Your information is already pre-filled!\n\n"
+                        else:
+                            response += f"Your appointment is confirmed! "
+                        
+                        response += f"\n📋 Appointment Details:\n"
+                        response += f"• Type: {appt_info['name']} ({appt_info['duration']} minutes)\n"
+                        response += f"• Date: {selected_slot.get('date', '')}\n"
+                        response += f"• Time: {selected_slot.get('start_time', '')}\n"
+                        response += f"• Patient: {patient_info['name']}\n"
+                        response += f"• Email: {patient_info['email']}\n"
+                        if patient_info.get('phone'):
+                            response += f"• Phone: {patient_info['phone']}\n"
+                        
+                        if booking.get('confirmation_code'):
+                            response += f"• Confirmation Code: {booking['confirmation_code']}\n"
+                        
+                        if booking_status == 'pending' and scheduling_link:
+                            response += f"\n🔗 Complete your booking: {scheduling_link}\n\n"
+                            response += f"Once you complete the booking, you'll receive a confirmation email at {patient_info['email']}."
+                        else:
+                            response += f"\nYou'll receive a confirmation email at {patient_info['email']} with all the details.\n\n"
+                        
+                        return {
+                            "message": response,
+                            "context": "confirmed",
+                            "appointment_details": {
+                                "booking_id": booking_id,
+                                "confirmation_code": booking.get('confirmation_code', ''),
+                                "date": selected_slot.get('date', ''),
+                                "time": selected_slot.get('start_time', ''),
+                                "appointment_type": appt_info['name'],
+                                "scheduling_link": scheduling_link,
+                                "status": booking_status,
+                                "patient_name": patient_info.get('name'),
+                                "patient_email": patient_info.get('email'),
+                                "patient_phone": patient_info.get('phone'),
+                                "full_date": selected_slot.get('full_date', '')
+                            }
+                        }
+                    except Exception as e:
+                        error_msg = f"I encountered an error while booking your appointment: {str(e)}"
+                        print(f"❌ Booking error: {e}")
+                        return {
+                            "message": error_msg,
+                            "context": "error"
+                        }
+        
+        # Extract information with improved patterns (only update if not already collected)
         email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', message, re.IGNORECASE)
         # Improved phone pattern - handles various formats
         phone_match = re.search(r'(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', message)
         
-        patient_info = session.get("patient_info", {})
-        
+        # Only update if not already in session (preserve existing data)
         if email_match:
-            patient_info["email"] = email_match.group(0).lower().strip()
+            extracted_email = email_match.group(0).lower().strip()
+            if not patient_info.get("email"):
+                patient_info["email"] = extracted_email
+                print(f"📧 Extracted and saved email: {extracted_email}")
+            else:
+                print(f"📧 Email already in session: {patient_info.get('email')}, ignoring new: {extracted_email}")
+        
         if phone_match:
             # Clean phone number
             phone = phone_match.group(0).strip()
@@ -655,7 +849,12 @@ class SchedulingAgent:
             phone = re.sub(r'[^\d+]', '', phone)
             if not phone.startswith('+') and len(phone) == 10:
                 phone = f"+1{phone}"  # Add US country code if missing
-            patient_info["phone"] = phone
+            
+            if not patient_info.get("phone"):
+                patient_info["phone"] = phone
+                print(f"📞 Extracted and saved phone: {phone}")
+            else:
+                print(f"📞 Phone already in session: {patient_info.get('phone')}, ignoring new: {phone}")
         
         # Extract name (everything that's not email or phone)
         name_text = message
@@ -723,6 +922,15 @@ class SchedulingAgent:
         missing_fields = [f for f in required_fields if f not in patient_info or not patient_info[f]]
         
         if missing_fields:
+            # Show what we already have
+            collected_info = []
+            if patient_info.get("name"):
+                collected_info.append(f"✓ Name: {patient_info['name']}")
+            if patient_info.get("email"):
+                collected_info.append(f"✓ Email: {patient_info['email']}")
+            if patient_info.get("phone"):
+                collected_info.append(f"✓ Phone: {patient_info['phone']}")
+            
             # Create friendly message
             if len(missing_fields) == 3:
                 missing_str = "your name, phone number, and email address"
@@ -731,15 +939,24 @@ class SchedulingAgent:
             else:
                 missing_str = f"your {missing_fields[0]}"
             
-            # Use LLM for natural message
+            # Build message acknowledging what we have
+            context_for_llm = f"User has already provided: {', '.join([f.replace('✓ ', '') for f in collected_info]) if collected_info else 'nothing'}. Still missing: {missing_str}."
+            
+            # Use LLM for natural message that acknowledges what we have
             llm_msg = await self._generate_llm_response(
-                f"User provided some info but still missing {missing_str}. Ask for remaining information in a warm, helpful way.",
+                f"{context_for_llm} Acknowledge what information we already have, then ask for the remaining information in a warm, helpful way.",
                 session,
-                {"missing_fields": missing_fields}
+                {"missing_fields": missing_fields, "collected_info": collected_info, "patient_info": patient_info}
             )
             
+            # Build fallback message
+            if collected_info:
+                fallback_msg = f"Great! I have:\n" + "\n".join(collected_info) + f"\n\nI still need {missing_str} to complete your booking. You can provide it now, or let me know if you'd like to proceed with what we have."
+            else:
+                fallback_msg = f"I need {missing_str} to complete your booking. You can provide them all at once, or one at a time - whatever's easiest for you."
+            
             return {
-                "message": llm_msg or f"I still need {missing_str}. You can provide them all at once, or one at a time - whatever's easiest for you.",
+                "message": llm_msg or fallback_msg,
                 "context": "collecting_patient_info"
             }
         
@@ -779,18 +996,31 @@ class SchedulingAgent:
             # Check if this is a pending booking (with scheduling link) or confirmed
             scheduling_link = booking.get('scheduling_link')
             booking_status = booking.get('status', 'confirmed')
+            booking_id = booking.get('booking_id', '')
             
-            response = f"Perfect! All set! 🎉\n\n"
-            if scheduling_link and booking_status == 'pending':
-                response += f"I've prepared your appointment booking:\n"
+            # For pending bookings, try to complete them immediately if possible
+            # Note: Calendly API doesn't support direct event creation, so we mark as ready
+            if scheduling_link and booking_status == 'pending' and booking_id.startswith('TEMP-'):
+                # Mark booking as ready in our system (even though it's pending in Calendly)
+                # The webhook will confirm it later when user clicks the link
+                response = f"Perfect! Your appointment is ready! 🎉\n\n"
+                response += f"✅ Appointment Details:\n"
                 response += f"• Date & Time: {selected_slot['date']} at {selected_slot['start_time']}\n"
                 response += f"• Type: {appt_info['name']}\n"
                 response += f"• Duration: {appt_info['duration']} minutes\n"
-                response += f"• Confirmation Code: {booking['confirmation_code']}\n\n"
-                response += f"Please click the link below to complete your booking. Your information is already pre-filled!\n\n"
-                response += f"📅 Book Your Appointment:\n{scheduling_link}\n\n"
-                response += f"After you complete the booking, you'll receive a confirmation email at {patient_info['email']}.\n\n"
+                response += f"• Confirmation Code: {booking['confirmation_code']}\n"
+                response += f"• Patient: {patient_info['name']}\n"
+                response += f"• Email: {patient_info['email']}\n\n"
+                response += f"📅 Finalize Your Booking:\n"
+                response += f"Your information is already pre-filled! Just click the link below to complete your booking in Calendly:\n\n"
+                response += f"{scheduling_link}\n\n"
+                response += f"Once you complete the booking, you'll receive a confirmation email at {patient_info['email']}.\n"
+                response += f"Your appointment will be automatically confirmed in our system.\n\n"
+                
+                # Update booking status to "ready" in our system (pending in Calendly)
+                booking_status = "ready"  # Custom status meaning "ready to finalize"
             else:
+                response = f"Perfect! All set! 🎉\n\n"
                 response += f"Your appointment is confirmed:\n"
                 response += f"• Date & Time: {selected_slot['date']} at {selected_slot['start_time']}\n"
                 response += f"• Type: {appt_info['name']}\n"
@@ -799,6 +1029,7 @@ class SchedulingAgent:
                 if scheduling_link:
                     response += f"📅 View/Manage Your Appointment:\n{scheduling_link}\n\n"
                 response += f"You'll receive a confirmation email at {patient_info['email']} with all the details.\n\n"
+            
             response += "Is there anything else you'd like to know about your visit?"
             
             # Build appointment_details with all relevant information
@@ -809,10 +1040,11 @@ class SchedulingAgent:
                 "time": selected_slot['start_time'],
                 "duration_minutes": appt_info['duration'],
                 "confirmation_code": booking['confirmation_code'],
-                "status": booking_status,
+                "status": booking_status,  # "ready" for pending bookings, "confirmed" for completed
                 "patient_name": patient_info.get('name'),
                 "patient_email": patient_info.get('email'),
-                "patient_phone": patient_info.get('phone')
+                "patient_phone": patient_info.get('phone'),
+                "full_date": selected_slot.get('full_date', '')  # Include for timezone conversion
             }
             
             # Add scheduling link if available
@@ -862,24 +1094,100 @@ class SchedulingAgent:
             # Switch to patient info collection
             return await self._handle_patient_info(message, session, calendly_client, faq_retriever)
         
-        # Check if user is providing a time (like "1:00 PM") - might be selecting different slot
-        time_pattern = re.search(r'\d{1,2}:?\d{0,2}\s*(am|pm)', lower_msg, re.IGNORECASE)
-        if time_pattern:
-            # User might want a different time - check if it matches available slots
+        # Check if user is providing a date/time - might be selecting different slot
+        # Extract date and time from user's message for better matching
+        user_date_parts = []
+        user_time = None
+        
+        # Try to extract date patterns
+        date_patterns = [
+            r'(monday|tuesday|wednesday|thursday|friday|saturday|sunday)[,\s]+(january|february|march|april|may|june|july|august|september|october|november|december)[,\s]+(\d{1,2})',  # "Wednesday, December 17"
+            r'(january|february|march|april|may|june|july|august|september|october|november|december)[,\s]+(\d{1,2})',  # "December 17"
+            r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?',  # "12/17" or "12/17/2024"
+        ]
+        
+        for pattern in date_patterns:
+            date_match = re.search(pattern, lower_msg, re.IGNORECASE)
+            if date_match:
+                user_date_parts = list(date_match.groups())
+                break
+        
+        # Extract time pattern
+        time_match = re.search(r'(\d{1,2}):?(\d{2})?\s*(am|pm)', lower_msg, re.IGNORECASE)
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2)) if time_match.group(2) else 0
+            period = time_match.group(3).upper()
+            # Normalize to 24-hour format for comparison
+            if period == "PM" and hour != 12:
+                hour += 12
+            elif period == "AM" and hour == 12:
+                hour = 0
+            user_time = f"{hour:02d}:{minute:02d}"
+        
+        # If user provided both date and time, try to match with available slots
+        if user_date_parts and user_time:
             available_slots = session.get("available_slots", [])
+            matched_slot = None
+            
             for slot in available_slots:
-                if time_pattern.group(0).lower() in slot.get("start_time", "").lower():
-                    # User selected a different slot
-                    session["selected_slot"] = slot
-                    session["awaiting_confirmation"] = False
-                    # Ask for confirmation of new slot
-                    display_text = slot.get("display_text", f"{slot.get('date', '')} at {slot.get('start_time', '')}")
-                    appt_name = self.appointment_types[session['appointment_type']]['name']
-                    return {
-                        "message": f"Perfect! {display_text} for a {appt_name}. Before I confirm, I'll need a few details:\n\n• Your full name\n• Best phone number to reach you\n• Email address for confirmation\n\nYou can provide these all at once, or one at a time - whatever's easiest for you.",
-                        "context": "collecting_patient_info",
-                        "available_slots": None
-                    }
+                slot_date = slot.get("date", "").lower()
+                slot_raw_time = slot.get("raw_time", "")  # HH:MM format
+                slot_time = slot.get("start_time", "").lower()
+                
+                # Check if date matches
+                date_matches = False
+                if slot_date:
+                    date_match_count = sum(1 for part in user_date_parts if part and part.lower() in slot_date)
+                    if date_match_count >= 2:  # At least 2 parts match
+                        date_matches = True
+                
+                # Check if time matches
+                time_matches = False
+                if slot_raw_time and user_time:
+                    time_matches = (slot_raw_time == user_time)
+                elif slot_time and user_time:
+                    hour_str = str(int(user_time.split(":")[0]))
+                    period = "pm" if int(user_time.split(":")[0]) >= 12 else "am"
+                    if hour_str in slot_time and period in slot_time:
+                        time_matches = True
+                
+                # Both date and time must match
+                if date_matches and time_matches:
+                    matched_slot = slot
+                    break
+            
+            if matched_slot:
+                # User selected a different slot
+                session["selected_slot"] = matched_slot
+                session["awaiting_confirmation"] = False
+                display_text = matched_slot.get("display_text", f"{matched_slot.get('date', '')} at {matched_slot.get('start_time', '')}")
+                appt_name = self.appointment_types[session['appointment_type']]['name']
+                return {
+                    "message": f"Perfect! {display_text} for a {appt_name}. Before I confirm, I'll need a few details:\n\n• Your full name\n• Best phone number to reach you\n• Email address for confirmation\n\nYou can provide these all at once, or one at a time - whatever's easiest for you.",
+                    "context": "collecting_patient_info",
+                    "available_slots": None
+                }
+        # If only time provided (no date), try to match by time only (less reliable)
+        elif user_time and not user_date_parts:
+            time_pattern = re.search(r'\d{1,2}:?\d{0,2}\s*(am|pm)', lower_msg, re.IGNORECASE)
+            if time_pattern:
+                # User might want a different time - check if it matches available slots
+                available_slots = session.get("available_slots", [])
+                for slot in available_slots:
+                    slot_raw_time = slot.get("raw_time", "")
+                    slot_time = slot.get("start_time", "").lower()
+                    if slot_raw_time == user_time or (slot_time and time_pattern.group(0).lower() in slot_time):
+                        # User selected a different slot (by time only)
+                        session["selected_slot"] = slot
+                        session["awaiting_confirmation"] = False
+                        display_text = slot.get("display_text", f"{slot.get('date', '')} at {slot.get('start_time', '')}")
+                        appt_name = self.appointment_types[session['appointment_type']]['name']
+                        return {
+                            "message": f"Perfect! {display_text} for a {appt_name}. Before I confirm, I'll need a few details:\n\n• Your full name\n• Best phone number to reach you\n• Email address for confirmation\n\nYou can provide these all at once, or one at a time - whatever's easiest for you.",
+                            "context": "collecting_patient_info",
+                            "available_slots": None
+                        }
         
         # Check if user confirms
         confirm_keywords = ['yes', 'correct', 'right', 'that works', 'sounds good', 'ok', 'okay', 'sure', 'yep', 'yeah']

@@ -60,6 +60,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: str = Field(default="default", description="Session identifier")
+    timezone: Optional[str] = Field(default=None, description="User's timezone (e.g., 'America/New_York', 'UTC')")
 
 class ChatResponse(BaseModel):
     message: str

@@ -4,7 +4,6 @@ Stores appointment bookings with proper UUIDs instead of TEMP IDs
 """
 
 from sqlalchemy import Column, String, DateTime, Integer, Enum, Text, Index
-from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.sql import func
 import uuid
 from enum import Enum as PyEnum
@@ -23,8 +22,8 @@ except ImportError:
         # Strategy 3: Absolute import (when running from project root)
         from backend.database import Base
 
-# Detect if using PostgreSQL
-USE_POSTGRES = os.getenv("DATABASE_URL", "").startswith("postgresql") or bool(os.getenv("DB_HOST"))
+# Note: UUIDs are stored as String(36) which works for both MySQL and SQLite
+# MySQL will use utf8mb4_bin collation from connection string charset=utf8mb4
 
 
 class BookingStatus(PyEnum):
@@ -40,25 +39,19 @@ class Booking(Base):
     Booking model - stores appointment bookings
     
     Uses UUID as primary key instead of TEMP IDs
-    Optimized for PostgreSQL with native UUID type
+    Optimized for MySQL with CHAR(36) for UUID storage
     """
     __tablename__ = "bookings"
     
-    # Primary key - Use PostgreSQL UUID type if available, otherwise String
-    if USE_POSTGRES:
-        id = Column(
-            PostgresUUID(as_uuid=False),  # PostgreSQL native UUID type
-            primary_key=True,
-            default=lambda: str(uuid.uuid4()),
-            index=True
-        )
-    else:
-        id = Column(
-            String(36),  # SQLite fallback
-            primary_key=True,
-            default=lambda: str(uuid.uuid4()),
-            index=True
-        )
+    # Primary key - Use String(36) for UUID storage (works for both MySQL and SQLite)
+    # MySQL will use utf8mb4_bin collation from connection string charset=utf8mb4
+    # SQLite doesn't support collation parameter, so we omit it for compatibility
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+        index=True
+    )
     
     # Calendly integration fields
     calendly_event_uri = Column(String(500), unique=True, nullable=True, index=True)
@@ -80,9 +73,9 @@ class Booking(Base):
     reason = Column(Text, nullable=True)
     
     # Status and tracking
-    # Use String for PostgreSQL compatibility (Enum requires CREATE TYPE)
+    # Use String for MySQL compatibility (Enum requires CREATE TYPE in MySQL)
     status = Column(
-        String(20),  # Changed from Enum to String for better PostgreSQL compatibility
+        String(20),  # String type for better MySQL compatibility
         nullable=False,
         default=BookingStatus.PENDING.value,
         index=True

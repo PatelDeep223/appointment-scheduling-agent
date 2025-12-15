@@ -34,6 +34,9 @@ export default function TimeSlotButtons({ slots, onSlotClick }: TimeSlotButtonsP
                 {slot.date && slot.start_time && (
                   <p className="text-xs text-gray-500 mt-0.5">
                     {slot.date} • {slot.start_time}
+                    {slot.display_timezone && (
+                      <span className="ml-1 text-gray-400">({slot.display_timezone})</span>
+                    )}
                   </p>
                 )}
               </div>

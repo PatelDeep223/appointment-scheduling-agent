@@ -1,6 +1,6 @@
 """
 Database configuration and session management
-Configured for PostgreSQL (can fallback to SQLite for development)
+Configured for MySQL (can fallback to SQLite for development)
 """
 
 import os
@@ -38,17 +38,17 @@ if not env_loaded:
 data_dir = Path("./data")
 data_dir.mkdir(exist_ok=True)
 
-# Database URL - PostgreSQL by default, SQLite as fallback
+# Database URL - MySQL by default, SQLite as fallback
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    None  # Will use PostgreSQL connection string if not set
+    None  # Will use MySQL connection string if not set
 )
 
 # If DATABASE_URL not set, try to build from individual components
 if not DATABASE_URL:
     db_host = os.getenv("DB_HOST", "localhost")
-    db_port = os.getenv("DB_PORT", "5432")
-    db_user = os.getenv("DB_USER", "postgres")
+    db_port = os.getenv("DB_PORT", "3306")
+    db_user = os.getenv("DB_USER", "root")
     db_password = os.getenv("DB_PASSWORD", "")
     db_name = os.getenv("DB_NAME", "appointments_db")
     
@@ -64,18 +64,19 @@ if not DATABASE_URL:
         # URL encode password to handle special characters
         from urllib.parse import quote_plus
         encoded_password = quote_plus(db_password)
-        DATABASE_URL = f"postgresql://{db_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
+        # Use mysql+pymysql:// for PyMySQL driver
+        DATABASE_URL = f"mysql+pymysql://{db_user}:{encoded_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
     else:
-        # Fallback to SQLite if no PostgreSQL credentials
+        # Fallback to SQLite if no MySQL credentials
         DATABASE_URL = "sqlite:///./data/appointments.db"
-        print("⚠️  No PostgreSQL password found, using SQLite for development")
-        print("   To use PostgreSQL, set DB_PASSWORD in .env file")
+        print("⚠️  No MySQL password found, using SQLite for development")
+        print("   To use MySQL, set DB_PASSWORD in .env file")
 
-# Try to connect to PostgreSQL, fallback to SQLite if it fails
+# Try to connect to MySQL, fallback to SQLite if it fails
 USE_SQLITE = False
-if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
+if DATABASE_URL and (DATABASE_URL.startswith("mysql") or DATABASE_URL.startswith("mysql+pymysql")):
     try:
-        # Test PostgreSQL connection
+        # Test MySQL connection
         from sqlalchemy import text
         test_engine = create_engine(
             DATABASE_URL,
@@ -85,28 +86,28 @@ if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
         with test_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         test_engine.dispose()
-        print(f"✅ PostgreSQL connection successful")
+        print(f"✅ MySQL connection successful")
     except Exception as e:
-        print(f"⚠️  PostgreSQL connection failed: {str(e)}")
+        print(f"⚠️  MySQL connection failed: {str(e)}")
         print("   Falling back to SQLite for demo mode")
         DATABASE_URL = "sqlite:///./data/appointments.db"
         USE_SQLITE = True
 
 # Extract database info for logging (safely using urlparse)
-db_info = "PostgreSQL"
-if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
+db_info = "MySQL"
+if DATABASE_URL and (DATABASE_URL.startswith("mysql") or DATABASE_URL.startswith("mysql+pymysql")):
     try:
         # Use urlparse for safe parsing (handles special characters correctly)
         parsed = urlparse(DATABASE_URL)
         log_host = parsed.hostname or "localhost"
-        log_port = parsed.port or 5432
+        log_port = parsed.port or 3306
         log_db = parsed.path.lstrip("/").split("?")[0] if parsed.path else "unknown"
         log_user = unquote(parsed.username) if parsed.username else "unknown"
         
         db_info = f"{log_db}@{log_host}:{log_port}"
     except Exception as e:
         # If parsing fails, just use generic info
-        db_info = "PostgreSQL"
+        db_info = "MySQL"
         print(f"⚠️  Could not parse database URL for logging: {e}")
 
 # Create engine with appropriate configuration
@@ -120,7 +121,7 @@ if DATABASE_URL.startswith("sqlite"):
     )
     print("📦 Using SQLite database")
 else:
-    # PostgreSQL configuration
+    # MySQL configuration
     # Use connection pooling for better performance
     engine = create_engine(
         DATABASE_URL,
@@ -130,7 +131,7 @@ else:
         pool_recycle=3600,  # Recycle connections after 1 hour
         echo=os.getenv("DEBUG", "False").lower() == "true"
     )
-    print(f"🐘 Using PostgreSQL database: {db_info}")
+    print(f"🐬 Using MySQL database: {db_info}")
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

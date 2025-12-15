@@ -1,9 +1,21 @@
 'use client'
 
-import FloatingChatWidget from '@/components/FloatingChatWidget'
-import { Stethoscope, CalendarClock, MessageCircle  } from 'lucide-react'
+import { useRef } from 'react'
+import FloatingChatWidget, { FloatingChatWidgetRef } from '@/components/FloatingChatWidget'
+import AvailabilityChecker from '@/components/AvailabilityChecker'
+import { Stethoscope, CalendarClock, MessageCircle } from 'lucide-react'
+import { TimeSlot } from '@/lib/api'
 
 export default function Home() {
+  const chatWidgetRef = useRef<FloatingChatWidgetRef>(null)
+
+  const handleSlotSelect = (slot: TimeSlot) => {
+    // Send the selected slot to the chat widget
+    if (chatWidgetRef.current) {
+      chatWidgetRef.current.sendMessage(slot.display_text)
+    }
+  }
+
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
      
@@ -48,8 +60,15 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Availability Checker Section */}
+      <div className="container mx-auto px-4 pb-16">
+        <div className="max-w-2xl mx-auto">
+          <AvailabilityChecker onSlotSelect={handleSlotSelect} />
+        </div>
+      </div>
+
       {/* Floating Chat Widget */}
-      <FloatingChatWidget />
+      <FloatingChatWidget ref={chatWidgetRef} />
     </main>
   )
 }

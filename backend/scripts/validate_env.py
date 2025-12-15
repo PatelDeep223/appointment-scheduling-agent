@@ -34,8 +34,8 @@ def validate_database_config():
         print(f"   Value: {database_url[:50]}..." if len(database_url) > 50 else f"   Value: {database_url}")
         
         # Validate format
-        if not database_url.startswith("postgresql://"):
-            print("   ⚠️  Warning: DATABASE_URL should start with 'postgresql://'")
+        if not (database_url.startswith("mysql://") or database_url.startswith("mysql+pymysql://")):
+            print("   ⚠️  Warning: DATABASE_URL should start with 'mysql+pymysql://'")
         else:
             try:
                 parsed = urlparse(database_url)
@@ -52,8 +52,8 @@ def validate_database_config():
         
         # Check individual components
         db_host = os.getenv("DB_HOST", "localhost")
-        db_port = os.getenv("DB_PORT", "5432")
-        db_user = os.getenv("DB_USER", "postgres")
+        db_port = os.getenv("DB_PORT", "3306")
+        db_user = os.getenv("DB_USER", "root")
         db_password = os.getenv("DB_PASSWORD", "")
         db_name = os.getenv("DB_NAME", "appointments_db")
         
@@ -75,9 +75,9 @@ def validate_database_config():
         
         # Build connection string
         encoded_password = quote_plus(db_password)
-        database_url = f"postgresql://{db_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
+        database_url = f"mysql+pymysql://{db_user}:{encoded_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
         print(f"✅ Would use connection string:")
-        print(f"   postgresql://{db_user}:***@{db_host}:{db_port}/{db_name}")
+        print(f"   mysql+pymysql://{db_user}:***@{db_host}:{db_port}/{db_name}")
     
     print()
     print("=" * 50)
@@ -90,19 +90,19 @@ def validate_database_config():
         
         engine = create_engine(database_url, connect_args={"connect_timeout": 5})
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT version()"))
+            result = conn.execute(text("SELECT VERSION()"))
             version = result.fetchone()[0]
             print(f"✅ Connection successful!")
-            print(f"   PostgreSQL: {version[:60]}...")
+            print(f"   MySQL: {version[:60]}...")
             return True
     except Exception as e:
         print(f"❌ Connection failed: {str(e)}")
         print()
         print("Common issues:")
         print("1. Wrong password - check DB_PASSWORD in .env")
-        print("2. User doesn't exist - create user in PostgreSQL")
+        print("2. User doesn't exist - create user in MySQL")
         print("3. Database doesn't exist - create database")
-        print("4. PostgreSQL not running - start PostgreSQL service")
+        print("4. MySQL not running - start MySQL service: sudo service mysql start")
         print("5. Special characters in password - use URL encoding")
         return False
 

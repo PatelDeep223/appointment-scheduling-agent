@@ -10,14 +10,19 @@ from sqlalchemy import and_, or_
 import random
 import string
 
+# Try direct import first (when running from backend/ directory)
 try:
-    # Try relative imports first (when running from backend directory)
-    from ..models.booking import Booking, BookingStatus
-    from ..api.calendly_integration import CalendlyClient
+    from models.booking import Booking, BookingStatus
+    from api.calendly_integration import CalendlyClient
 except ImportError:
-    # Fallback to absolute imports (when running from project root)
-    from backend.models.booking import Booking, BookingStatus
-    from backend.api.calendly_integration import CalendlyClient
+    # Fallback to relative import (when running as package)
+    try:
+        from ..models.booking import Booking, BookingStatus
+        from ..api.calendly_integration import CalendlyClient
+    except ImportError:
+        # Fallback to absolute import (when running from project root)
+        from backend.models.booking import Booking, BookingStatus
+        from backend.api.calendly_integration import CalendlyClient
 
 
 class BookingService:
@@ -44,7 +49,8 @@ class BookingService:
         reason: str,
         scheduling_url: str,
         event_type_uuid: str,
-        duration_minutes: int
+        duration_minutes: int,
+        extra_data: Optional[str] = None
     ) -> Booking:
         """
         Create a new booking in the database
@@ -72,7 +78,8 @@ class BookingService:
             patient_phone=patient_phone,
             reason=reason,
             status=BookingStatus.PENDING.value,  # Store as string value
-            confirmation_code=confirmation_code
+            confirmation_code=confirmation_code,
+            extra_data=extra_data
         )
         
         try:
@@ -96,6 +103,24 @@ class BookingService:
     def get_booking_by_confirmation_code(self, confirmation_code: str) -> Optional[Booking]:
         """Get booking by confirmation code"""
         return self.db.query(Booking).filter(Booking.confirmation_code == confirmation_code).first()
+    
+    def get_booking_by_temp_id(self, temp_booking_id: str) -> Optional[Booking]:
+        """Get booking by TEMP ID stored in extra_data"""
+        import json
+        # Search for bookings where extra_data contains the temp_booking_id
+        all_pending = self.db.query(Booking).filter(
+            Booking.status == BookingStatus.PENDING.value
+        ).all()
+        
+        for booking in all_pending:
+            if booking.extra_data:
+                try:
+                    extra = json.loads(booking.extra_data)
+                    if extra.get("temp_booking_id") == temp_booking_id:
+                        return booking
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        return None
     
     def get_booking_by_calendly_event_uri(self, event_uri: str) -> Optional[Booking]:
         """Get booking by Calendly event URI"""
