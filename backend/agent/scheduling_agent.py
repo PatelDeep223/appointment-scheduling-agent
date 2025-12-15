@@ -778,7 +778,7 @@ class SchedulingAgent:
                         
                         response = f"Perfect! I've got everything I need. "
                         
-                        if booking_status == 'pending' or booking_id.startswith('TEMP-'):
+                        if booking_status == 'pending':
                             response += f"I've prepared your appointment booking. "
                             if scheduling_link:
                                 response += f"Please click the link below to complete your booking in Calendly. Your information is already pre-filled!\n\n"
@@ -880,6 +880,110 @@ class SchedulingAgent:
         
         session["patient_info"] = patient_info
         
+        # Check if we have all required info FIRST (before checking completion signals)
+        required_fields = ["name", "email", "phone"]
+        missing_fields = [f for f in required_fields if f not in patient_info or not patient_info[f]]
+        
+        # If all info is collected, proceed to booking automatically
+        if not missing_fields:
+            # All info collected! Proceed to booking
+            selected_slot = session.get("selected_slot")
+            if selected_slot:
+                # Check if user explicitly said to proceed (confirm, done, etc.)
+                completion_keywords = ['confirm', 'done', 'ok', 'okay', 'yes', 'sure', 'go ahead', 'proceed', 'finalize', 'complete', 'book', 'schedule', 'finalize', 'all set']
+                user_wants_to_proceed = is_completion or any(keyword in lower_msg for keyword in completion_keywords)
+                
+                # Also check if user just provided the last piece of info (email, phone, or name)
+                just_provided_info = email_match or phone_match or (name and len(name.strip()) > 1)
+                
+                # Proceed if user said confirm/done OR if they just provided the last piece of info
+                if user_wants_to_proceed or just_provided_info:
+                    # Proceed to booking
+                    appointment_type = session.get("appointment_type", "consultation")
+                    
+                    try:
+                        # Book appointment
+                        api_start_time = selected_slot.get("raw_time")
+                        if not api_start_time:
+                            time_str = selected_slot["start_time"]
+                            try:
+                                if "AM" in time_str.upper() or "PM" in time_str.upper():
+                                    time_obj = datetime.strptime(time_str.upper().strip(), "%I:%M %p")
+                                    api_start_time = time_obj.strftime("%H:%M")
+                                else:
+                                    api_start_time = time_str
+                            except:
+                                api_start_time = "10:00"
+                        
+                        booking = await calendly_client.create_booking(
+                            appointment_type=appointment_type,
+                            date=selected_slot["full_date"],
+                            start_time=api_start_time,
+                            patient_name=patient_info["name"],
+                            patient_email=patient_info["email"],
+                            patient_phone=patient_info["phone"],
+                            reason=session.get("reason", "General consultation")
+                        )
+                        
+                        appt_info = self.appointment_types[appointment_type]
+                        scheduling_link = booking.get('scheduling_link')
+                        booking_status = booking.get('status', 'confirmed')
+                        booking_id = booking.get('booking_id', '')
+                        
+                        response = f"Perfect! I've got everything I need. "
+                        
+                        if booking_status == 'pending':
+                            response += f"I've prepared your appointment booking. "
+                            if scheduling_link:
+                                response += f"Please click the link below to complete your booking in Calendly. Your information is already pre-filled!\n\n"
+                        else:
+                            response += f"Your appointment is confirmed! "
+                        
+                        response += f"\n📋 Appointment Details:\n"
+                        response += f"• Type: {appt_info['name']} ({appt_info['duration']} minutes)\n"
+                        response += f"• Date: {selected_slot.get('date', '')}\n"
+                        response += f"• Time: {selected_slot.get('start_time', '')}\n"
+                        response += f"• Patient: {patient_info['name']}\n"
+                        response += f"• Email: {patient_info['email']}\n"
+                        if patient_info.get('phone'):
+                            response += f"• Phone: {patient_info['phone']}\n"
+                        
+                        if booking.get('confirmation_code'):
+                            response += f"• Confirmation Code: {booking['confirmation_code']}\n"
+                        
+                        if booking_status == 'pending' and scheduling_link:
+                            response += f"\n🔗 Complete your booking: {scheduling_link}\n\n"
+                            response += f"Once you complete the booking, you'll receive a confirmation email at {patient_info['email']}."
+                        else:
+                            response += f"\nYou'll receive a confirmation email at {patient_info['email']} with all the details.\n\n"
+                        
+                        return {
+                            "message": response,
+                            "context": "confirmed",
+                            "appointment_details": {
+                                "booking_id": booking_id,
+                                "confirmation_code": booking.get('confirmation_code', ''),
+                                "date": selected_slot.get('date', ''),
+                                "time": selected_slot.get('start_time', ''),
+                                "appointment_type": appt_info['name'],
+                                "scheduling_link": scheduling_link,
+                                "status": booking_status,
+                                "patient_name": patient_info.get('name'),
+                                "patient_email": patient_info.get('email'),
+                                "patient_phone": patient_info.get('phone'),
+                                "full_date": selected_slot.get('full_date', '')
+                            }
+                        }
+                    except Exception as e:
+                        error_msg = f"I encountered an error while booking your appointment: {str(e)}"
+                        print(f"❌ Booking error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return {
+                            "message": error_msg,
+                            "context": "error"
+                        }
+        
         # Check if we're in rescheduling mode
         rescheduling_info = session.get("rescheduling")
         if rescheduling_info and rescheduling_info.get("selected_slot"):
@@ -917,10 +1021,7 @@ class SchedulingAgent:
                 calendly_client=calendly_client
             )
         
-        # Check if we have all required info
-        required_fields = ["name", "email", "phone"]
-        missing_fields = [f for f in required_fields if f not in patient_info or not patient_info[f]]
-        
+        # Still missing some info
         if missing_fields:
             # Show what we already have
             collected_info = []
@@ -1000,7 +1101,7 @@ class SchedulingAgent:
             
             # For pending bookings, try to complete them immediately if possible
             # Note: Calendly API doesn't support direct event creation, so we mark as ready
-            if scheduling_link and booking_status == 'pending' and booking_id.startswith('TEMP-'):
+            if scheduling_link and booking_status == 'pending':
                 # Mark booking as ready in our system (even though it's pending in Calendly)
                 # The webhook will confirm it later when user clicks the link
                 response = f"Perfect! Your appointment is ready! 🎉\n\n"
@@ -1034,7 +1135,7 @@ class SchedulingAgent:
             
             # Build appointment_details with all relevant information
             appointment_details = {
-                "booking_id": booking.get('booking_id', booking.get('temp_booking_id')),
+                "booking_id": booking.get('booking_id'),
                 "appointment_type": appt_info['name'],
                 "date": selected_slot['date'],
                 "time": selected_slot['start_time'],

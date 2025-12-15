@@ -41,7 +41,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "ngrok-skip-browser-warning"],  # Allow ngrok bypass header
 )
 
 # Include booking routes
@@ -531,16 +531,71 @@ async def calendly_webhook(request: Request):
         # Get webhook payload
         body = await request.body()
         
-        # Handle empty body
+        # Handle empty body - automatically sync all pending bookings
         if not body or len(body) == 0:
             print(f"⚠️  Empty webhook payload received from {client_ip}")
-            raise HTTPException(status_code=400, detail="Empty webhook payload")
+            print(f"   🔄 Automatically syncing all pending bookings...")
+            
+            # Automatically sync all pending bookings
+            synced_count = 0
+            try:
+                # Get all pending bookings from database
+                try:
+                    from database import get_db
+                    from services.booking_service import BookingService
+                    from models.booking import BookingStatus
+                except ImportError:
+                    try:
+                        from backend.database import get_db
+                        from backend.services.booking_service import BookingService
+                        from backend.models.booking import BookingStatus
+                    except ImportError:
+                        from ..database import get_db
+                        from ..services.booking_service import BookingService
+                        from ..models.booking import BookingStatus
+                
+                db = next(get_db())
+                booking_service = BookingService(db, calendly_client)
+                
+                # Get all pending bookings from database
+                pending_db_bookings = booking_service.get_all_pending_bookings(limit=20)
+                print(f"   Found {len(pending_db_bookings)} pending bookings to sync")
+                
+                # Sync each pending booking
+                for pending_booking in pending_db_bookings:
+                    if pending_booking.patient_email and pending_booking.date:
+                        print(f"   🔄 Auto-syncing booking {pending_booking.id} for {pending_booking.patient_email}...")
+                        synced = await calendly_client.sync_booking_by_email(
+                            pending_booking.patient_email,
+                            pending_booking.date
+                        )
+                        if synced:
+                            synced_count += 1
+                            print(f"   ✅ Auto-synced booking {pending_booking.id}")
+                
+                db.close()
+                
+                return {
+                    "status": "auto_synced",
+                    "processed": True,
+                    "synced_count": synced_count,
+                    "message": f"Empty webhook received. Automatically synced {synced_count} pending booking(s) from Calendly."
+                }
+            except Exception as sync_error:
+                print(f"   ⚠️  Auto-sync error: {sync_error}")
+                import traceback
+                traceback.print_exc()
+                return {
+                    "status": "error",
+                    "error": str(sync_error),
+                    "message": "Webhook received but auto-sync failed."
+                }
         
         # Try to parse JSON
         try:
             webhook_data = json.loads(body)
         except json.JSONDecodeError as e:
-            print(f"❌ Invalid JSON in webhook payload: {str(e)}")
+            print(f"Invalid JSON in webhook payload: {str(e)}")
             print(f"   Body content (first 500 chars): {body[:500]}")
             raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
         
@@ -554,6 +609,43 @@ async def calendly_webhook(request: Request):
         
         # Process webhook event
         result = await calendly_client.process_webhook_event(webhook_data)
+        
+        # After processing webhook, automatically sync any remaining pending bookings
+        # This ensures bookings are confirmed even if webhook payload was incomplete
+        if result.get("processed"):
+            try:
+                # Try to auto-sync remaining pending bookings
+                try:
+                    from database import get_db
+                    from services.booking_service import BookingService
+                    from models.booking import BookingStatus
+                except ImportError:
+                    try:
+                        from backend.database import get_db
+                        from backend.services.booking_service import BookingService
+                        from backend.models.booking import BookingStatus
+                    except ImportError:
+                        from ..database import get_db
+                        from ..services.booking_service import BookingService
+                        from ..models.booking import BookingStatus
+                
+                db = next(get_db())
+                booking_service = BookingService(db, calendly_client)
+                
+                # Get remaining pending bookings
+                pending_db_bookings = booking_service.get_all_pending_bookings(limit=10)
+                if pending_db_bookings:
+                    print(f"   🔄 Auto-syncing {len(pending_db_bookings)} remaining pending bookings...")
+                    for pending_booking in pending_db_bookings:
+                        if pending_booking.patient_email and pending_booking.date:
+                            await calendly_client.sync_booking_by_email(
+                                pending_booking.patient_email,
+                                pending_booking.date
+                            )
+                
+                db.close()
+            except Exception as sync_error:
+                print(f"   ⚠️  Post-webhook auto-sync error: {sync_error}")
         
         # Return 200 OK to acknowledge receipt
         response_message = result.get("message", "Webhook received but not processed")
@@ -594,12 +686,12 @@ async def get_appointment(booking_id: str):
     Get appointment details by booking ID
     
     This endpoint returns the current status of a booking.
-    For pending bookings (TEMP-*), it will check if webhook has confirmed it.
+    For pending bookings, it will check if webhook has confirmed it.
     Also accepts Calendly invitee IDs to fetch bookings directly from Calendly.
     
-    Note: TEMP booking IDs are stored in memory. If the server restarts,
-    pending bookings will be lost. Once a webhook confirms the booking,
-    it's moved to real_bookings and can be found by the temp_booking_id.
+    Note: Booking IDs are UUIDs from the database, ensuring persistence
+    across server restarts. Once a webhook confirms the booking,
+    it's moved to confirmed status in the database.
     
     For mock mode: Bookings are immediately confirmed.
     For real Calendly API: Bookings start as "pending" until user completes booking in Calendly.
@@ -607,91 +699,178 @@ async def get_appointment(booking_id: str):
     try:
         print(f"\n📋 Getting appointment: {booking_id}")
         
-        # Check if it's a Calendly invitee ID (UUID format)
+        # ALWAYS check database first - booking IDs are UUIDs from database
+        # Only try Calendly API if database lookup fails
+        booking = calendly_client.get_booking_by_id(booking_id)
+        
+        # If found in database, return it immediately
+        if booking:
+            print(f"✅ Found booking in database: {booking_id}")
+            # Ensure booking_id is included in response
+            if "booking_id" not in booking:
+                booking["booking_id"] = booking_id
+            
+            # If booking is pending, add sync option
+            booking_status = booking.get("status", "unknown")
+            if booking_status == "pending" and booking.get("patient_email"):
+                # Add a flag to indicate manual sync is available
+                booking["can_sync"] = True
+                booking["sync_message"] = "Click 'Check Status' to manually verify if your booking was completed in Calendly."
+            
+            # Add helpful status information
+            is_pending = booking_status == "pending"
+            
+            # Add status explanation
+            if is_pending and not calendly_client.use_mock:
+                booking["status_explanation"] = (
+                    "This booking is pending confirmation. "
+                    "Please complete your booking by clicking the scheduling link in your email or the link provided. "
+                    "Once you complete the booking in Calendly, it will be automatically confirmed via webhook."
+                )
+                if booking.get("scheduling_link"):
+                    booking["action_required"] = "Click the scheduling link to complete your booking"
+            elif is_pending and calendly_client.use_mock:
+                # In mock mode, this shouldn't happen, but handle it
+                booking["status"] = "confirmed"
+                booking["status_explanation"] = "Booking confirmed (mock mode)"
+            
+            print(f"✅ Returning booking details (Status: {booking_status}, Mock: {calendly_client.use_mock})")
+            
+            # Return JSON response with proper headers
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                content=booking,
+                headers={
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-cache",
+                }
+            )
+        
+        # Only if NOT found in database, try Calendly API as fallback
+        # This handles cases where someone passes a Calendly invitee ID directly
         import re
         uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
         
         if re.match(uuid_pattern, booking_id.lower()):
-            # It's a Calendly invitee ID, try to fetch from Calendly
-            print(f"📥 Detected Calendly invitee ID: {booking_id}")
-            booking = await calendly_client.get_booking_by_invitee_id(booking_id)
-            if booking:
-                print(f"✅ Found booking via invitee ID")
-                return booking
+            # It might be a Calendly invitee ID, try to fetch from Calendly
+            print(f"📥 Not found in database, trying Calendly invitee ID lookup: {booking_id}")
+            try:
+                booking = await calendly_client.get_booking_by_invitee_id(booking_id)
+                if booking:
+                    print(f"✅ Found booking via Calendly invitee ID")
+                    # Return JSON response
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        content=booking,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Cache-Control": "no-cache",
+                        }
+                    )
+            except Exception as e:
+                # Handle rate limits gracefully
+                if "429" in str(e) or "rate limit" in str(e).lower():
+                    print(f"⚠️  Calendly API rate limit hit, skipping invitee lookup")
+                else:
+                    print(f"⚠️  Error fetching from Calendly: {e}")
         
-        # Try normal booking lookup
-        booking = calendly_client.get_booking_by_id(booking_id)
+        # If we reach here, booking was not found in database or Calendly
+        # Provide helpful error message
+        error_detail = {
+            "error": "Booking not found",
+            "booking_id": booking_id,
+            "message": f"Booking '{booking_id}' not found in the system.",
+            "suggestions": [
+                "Verify the booking ID is correct",
+                "Check if the booking was created successfully",
+                "Wait for the booking to be confirmed via webhook"
+            ]
+        }
         
-        if not booking:
-            # Provide helpful error message
-            error_detail = {
-                "error": "Booking not found",
-                "booking_id": booking_id,
-                "suggestions": []
-            }
-            
-            # Check if it's a TEMP booking ID
-            if booking_id.startswith("TEMP-"):
-                error_detail["message"] = (
-                    f"Temporary booking ID '{booking_id}' not found. "
-                    "This could happen if:\n"
-                    "1. The server was restarted (bookings are stored in memory)\n"
-                    "2. The booking hasn't been created yet\n"
-                    "3. The booking was moved to confirmed status (check by email or Calendly invitee ID)"
-                )
-                error_detail["suggestions"] = [
-                    "Wait for the booking to be confirmed via webhook",
-                    "Check your email for Calendly confirmation with invitee ID",
-                    "Try searching by Calendly invitee ID if you have it"
-                ]
-            else:
-                error_detail["message"] = f"Booking '{booking_id}' not found in the system."
-                error_detail["suggestions"] = [
-                    "Verify the booking ID is correct",
-                    "Check if the booking was created successfully",
-                    "If it's a TEMP booking, wait for webhook confirmation"
-                ]
-            
-            # Include booking statistics for debugging
-            error_detail["system_status"] = {
-                "pending_bookings_count": len(calendly_client.pending_bookings),
-                "confirmed_bookings_count": len(calendly_client.real_bookings),
-                "using_mock": calendly_client.use_mock,
-                "mock_bookings_count": len(calendly_client.mock_bookings) if hasattr(calendly_client, 'mock_bookings') else 0
-            }
-            
-            raise HTTPException(status_code=404, detail=error_detail)
+        # Include booking statistics for debugging
+        error_detail["system_status"] = {
+            "pending_bookings_count": len(calendly_client.pending_bookings),
+            "confirmed_bookings_count": len(calendly_client.real_bookings),
+            "using_mock": calendly_client.use_mock,
+            "mock_bookings_count": len(calendly_client.mock_bookings) if hasattr(calendly_client, 'mock_bookings') else 0
+        }
         
-        # Ensure booking_id is included in response
-        if "booking_id" not in booking:
-            booking["booking_id"] = booking_id
-        
-        # Add helpful status information
-        booking_status = booking.get("status", "unknown")
-        is_pending = booking_status == "pending" or booking_id.startswith("TEMP-")
-        
-        # Add status explanation
-        if is_pending and not calendly_client.use_mock:
-            booking["status_explanation"] = (
-                "This booking is pending confirmation. "
-                "Please complete your booking by clicking the scheduling link in your email or the link provided. "
-                "Once you complete the booking in Calendly, it will be automatically confirmed via webhook."
-            )
-            if booking.get("scheduling_link"):
-                booking["action_required"] = "Click the scheduling link to complete your booking"
-        elif is_pending and calendly_client.use_mock:
-            # In mock mode, this shouldn't happen, but handle it
-            booking["status"] = "confirmed"
-            booking["status_explanation"] = "Booking confirmed (mock mode)"
-        
-        print(f"✅ Returning booking details (Status: {booking_status}, Mock: {calendly_client.use_mock})")
-        return booking
+        raise HTTPException(status_code=404, detail=error_detail)
         
     except HTTPException:
         raise
     except Exception as e:
         print(f"❌ Error getting appointment {booking_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error retrieving booking: {str(e)}")
+
+
+@app.post("/api/appointments/{booking_id}/sync")
+async def sync_appointment(booking_id: str):
+    """
+    Manually sync a pending booking with Calendly API
+    This checks Calendly directly to see if the booking was completed,
+    even if the webhook hasn't arrived yet.
+    """
+    try:
+        print(f"\n🔄 Syncing booking: {booking_id}")
+        
+        # Get current booking
+        booking = calendly_client.get_booking_by_id(booking_id)
+        if not booking:
+            raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
+        
+        # If already confirmed, no need to sync
+        if booking.get("status") == "confirmed":
+            return {
+                "success": True,
+                "message": "Booking is already confirmed",
+                "booking": booking
+            }
+        
+        # Get patient email and date for matching
+        patient_email = booking.get("patient_email")
+        booking_date = booking.get("date")
+        
+        if not patient_email:
+            raise HTTPException(status_code=400, detail="Cannot sync: patient email not found in booking")
+        
+        # Try to find booking in Calendly by checking recent events
+        print(f"   Searching Calendly for email: {patient_email}, date: {booking_date}")
+        
+        # Use the sync method from calendly_integration
+        synced_booking = await calendly_client.sync_booking_by_email(patient_email, booking_date)
+        
+        if synced_booking:
+            print(f"   ✅ Found booking in Calendly, updating status")
+            # Ensure booking_id is set for frontend compatibility
+            if "booking_id" not in synced_booking or not synced_booking.get("booking_id"):
+                synced_booking["booking_id"] = booking_id  # Keep original booking_id
+            
+            # Ensure all required fields are present
+            if "time" not in synced_booking and "start_time" in synced_booking:
+                synced_booking["time"] = synced_booking.get("start_time", "")
+            
+            return {
+                "success": True,
+                "message": "Booking found in Calendly and synced successfully",
+                "booking": synced_booking,
+                "was_pending": booking.get("status") == "pending"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Booking not found in Calendly. Please complete your booking using the scheduling link.",
+                "booking": booking,
+                "scheduling_link": booking.get("scheduling_link")
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error syncing booking: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error syncing booking: {str(e)}")
 
 
 @app.get("/api/calendly/webhook/status")

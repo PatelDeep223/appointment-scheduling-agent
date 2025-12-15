@@ -1239,33 +1239,11 @@ class CalendlyClient:
                 prefill_query = urlencode(prefill_params)
                 prefilled_link = f"{base_link}?{prefill_query}"
                 
-                # Generate a temporary booking ID for tracking (before webhook confirmation)
-                temp_booking_id = f"TEMP-{datetime.now().strftime('%Y%m%d')}-{''.join(random.choices(string.digits, k=6))}"
+                # Generate confirmation code
                 confirmation_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                 
-                # Store pending booking data (will be updated when webhook is received)
-                pending_booking = {
-                    "temp_booking_id": temp_booking_id,
-                    "confirmation_code": confirmation_code,
-                    "status": "pending",
-                    "appointment_type": self.appointment_types[normalized_type]["name"],
-                    "event_type_uuid": event_type_uuid,
-                    "date": date,
-                    "start_time": start_time,
-                    "patient_name": patient_name,
-                    "patient_email": patient_email,
-                    "patient_phone": patient_phone,
-                    "reason": reason,
-                    "scheduling_link": prefilled_link,
-                    "created_at": datetime.now().isoformat(),
-                    "calendly_event_uri": None,  # Will be set by webhook
-                    "calendly_invitee_uri": None  # Will be set by webhook
-                }
-                
-                # Store in memory (for quick lookup)
-                self.pending_bookings[temp_booking_id] = pending_booking
-                
-                # Also save to database if available
+                # Save to database first to get the real booking ID (UUID)
+                db_booking_id = None
                 try:
                     # Try direct import first (when running from backend/ directory)
                     try:
@@ -1287,10 +1265,9 @@ class CalendlyClient:
                     db = next(get_db())
                     booking_service = BookingService(db, self)
                     
-                    # Create booking in database
+                    # Create booking in database - this generates the UUID
                     import json
                     extra_data = {
-                        "temp_booking_id": temp_booking_id,
                         "created_via": "calendly_scheduling_link"
                     }
                     
@@ -1308,23 +1285,45 @@ class CalendlyClient:
                         extra_data=json.dumps(extra_data)
                     )
                     
-                    # Store mapping from temp_booking_id to database ID
-                    pending_booking["db_booking_id"] = db_booking.id
-                    pending_booking["db_confirmation_code"] = db_booking.confirmation_code
-                    
-                    print(f"✅ Booking saved to database with ID: {db_booking.id} (TEMP ID: {temp_booking_id})")
+                    db_booking_id = db_booking.id
+                    confirmation_code = db_booking.confirmation_code  # Use confirmation code from database
+                    print(f"✅ Booking created and saved to database with ID: {db_booking_id}")
                     db.close()
                 except Exception as e:
-                    print(f"⚠️  Could not save booking to database: {e}")
-                    # Continue with in-memory storage
+                    print(f"❌ Could not save booking to database: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise Exception(f"Failed to create booking in database: {str(e)}")
+                
+                # Store pending booking data using database UUID (will be updated when webhook is received)
+                pending_booking = {
+                    "booking_id": db_booking_id,  # Use database UUID as booking_id
+                    "confirmation_code": confirmation_code,
+                    "status": "pending",
+                    "appointment_type": self.appointment_types[normalized_type]["name"],
+                    "event_type_uuid": event_type_uuid,
+                    "date": date,
+                    "start_time": start_time,
+                    "patient_name": patient_name,
+                    "patient_email": patient_email,
+                    "patient_phone": patient_phone,
+                    "reason": reason,
+                    "scheduling_link": prefilled_link,
+                    "created_at": datetime.now().isoformat(),
+                    "calendly_event_uri": None,  # Will be set by webhook
+                    "calendly_invitee_uri": None  # Will be set by webhook
+                }
+                
+                # Store in memory using database UUID as key
+                self.pending_bookings[db_booking_id] = pending_booking
                 
                 print(f"📅 Pre-filled Calendly booking link generated: {prefilled_link}")
-                print(f"   Temporary booking ID: {temp_booking_id}")
+                print(f"   Booking ID: {db_booking_id}")
                 print(f"   Waiting for webhook confirmation...")
                 
                 # Return booking details with pre-filled scheduling link
                 return {
-                    "booking_id": temp_booking_id,
+                    "booking_id": db_booking_id,  # Return database UUID, not TEMP ID
                     "confirmation_code": confirmation_code,
                     "status": "pending",  # Pending until webhook confirms booking
                     "appointment_type": self.appointment_types[normalized_type]["name"],
@@ -1332,6 +1331,7 @@ class CalendlyClient:
                     "start_time": start_time,
                     "patient_name": patient_name,
                     "patient_email": patient_email,
+                    "patient_phone": patient_phone,
                     "scheduling_link": prefilled_link,
                     "message": "Please complete your booking by clicking the scheduling link. Your information is pre-filled. The appointment will be confirmed once you complete the booking in Calendly.",
                     "clinic_info": {
@@ -1528,6 +1528,57 @@ class CalendlyClient:
             
             if not event_uri or not invitee_uri:
                 print(f"⚠️  Missing event or invitee URI in webhook payload")
+                print(f"   Attempting automatic sync for all pending bookings...")
+                
+                # Try to auto-sync all pending bookings
+                try:
+                    # Get all pending bookings from database
+                    try:
+                        from database import get_db
+                        from services.booking_service import BookingService
+                        from models.booking import BookingStatus
+                    except ImportError:
+                        try:
+                            from ..database import get_db
+                            from ..services.booking_service import BookingService
+                            from ..models.booking import BookingStatus
+                        except ImportError:
+                            from backend.database import get_db
+                            from backend.services.booking_service import BookingService
+                            from backend.models.booking import BookingStatus
+                    
+                    db = next(get_db())
+                    booking_service = BookingService(db, self)
+                    
+                    # Get all pending bookings from database
+                    pending_db_bookings = booking_service.get_all_pending_bookings(limit=20)
+                    print(f"   Found {len(pending_db_bookings)} pending bookings to sync")
+                    
+                    # Try syncing each pending booking
+                    synced_count = 0
+                    for pending_booking in pending_db_bookings:
+                        if pending_booking.patient_email and pending_booking.date:
+                            print(f"   🔄 Auto-syncing booking {pending_booking.id} for {pending_booking.patient_email}...")
+                            synced = await self.sync_booking_by_email(
+                                pending_booking.patient_email,
+                                pending_booking.date
+                            )
+                            if synced:
+                                synced_count += 1
+                                print(f"   ✅ Auto-synced booking {pending_booking.id}")
+                    
+                    db.close()
+                    
+                    if synced_count > 0:
+                        return {
+                            "processed": True,
+                            "auto_synced": True,
+                            "synced_count": synced_count,
+                            "message": f"Auto-synced {synced_count} pending booking(s) from Calendly"
+                        }
+                except Exception as sync_error:
+                    print(f"   ⚠️  Auto-sync error: {sync_error}")
+                
                 return {"processed": False, "error": "Missing required fields"}
             
             # Check if this is a test URI (for testing purposes)
@@ -1596,18 +1647,18 @@ class CalendlyClient:
                     # Try to match with pending booking by email or confirmation code
                     # This helps match webhook events to pending bookings
                     matched_pending = None
-                    matched_temp_id = None
+                    matched_booking_id = None
                     
                     # First, try to match by email in pending bookings (in-memory)
-                    for temp_id, pending in list(self.pending_bookings.items()):
+                    for booking_id_key, pending in list(self.pending_bookings.items()):
                         # Match by email (case-insensitive)
                         pending_email = pending.get("patient_email", "").lower().strip()
                         webhook_email = booking_data.get("patient_email", "").lower().strip()
                         
                         if pending_email and webhook_email and pending_email == webhook_email:
                             matched_pending = pending
-                            matched_temp_id = temp_id
-                            print(f"✅ Matched webhook to pending booking {temp_id} by email: {webhook_email}")
+                            matched_booking_id = booking_id_key  # This is now the database UUID
+                            print(f"✅ Matched webhook to pending booking {matched_booking_id} by email: {webhook_email}")
                             break
                     
                     # If not found in memory, try database
@@ -1659,15 +1710,8 @@ class CalendlyClient:
                                     "created_at": db_booking.created_at.isoformat() if db_booking.created_at else None
                                 }
                                 
-                                # Try to find temp_id from pending_bookings by email
-                                for temp_id, pending in self.pending_bookings.items():
-                                    if pending.get("patient_email", "").lower() == booking_data.get("patient_email", "").lower():
-                                        matched_temp_id = temp_id
-                                        break
-                                
-                                # If no temp_id found, use database ID
-                                if not matched_temp_id:
-                                    matched_temp_id = db_booking.id
+                                # Use database ID as matched booking ID
+                                matched_booking_id = db_booking.id
                                 
                                 print(f"✅ Matched webhook to database booking {db_booking.id} by email: {booking_data.get('patient_email')}")
                             
@@ -1675,39 +1719,77 @@ class CalendlyClient:
                         except Exception as e:
                             print(f"⚠️  Error matching webhook in database: {e}")
                     
-                    if matched_pending and matched_temp_id:
-                        # Update with Calendly data
-                        booking_data.update({
-                            "booking_id": matched_temp_id,  # Keep temp booking ID
-                            "temp_booking_id": matched_temp_id,
-                            "confirmation_code": matched_pending.get("confirmation_code", ""),
-                            "appointment_type": matched_pending.get("appointment_type", ""),
-                            "reason": matched_pending.get("reason", ""),
-                            "scheduling_link": matched_pending.get("scheduling_link", "")
-                        })
-                        
-                        # Update database if booking was saved there
-                        db_booking_id = matched_pending.get("db_booking_id")
-                        if db_booking_id:
+                    # Auto-match and update booking - try multiple strategies
+                    if matched_pending and matched_booking_id:
+                        # Strategy 1: Update using matched booking ID
+                        db_booking_id = matched_booking_id
+                    elif not matched_pending:
+                        # Strategy 2: Try to find booking by email in database (auto-match)
+                        try:
                             try:
-                                # Try direct import first (when running from backend/ directory)
+                                from database import get_db
+                                from services.booking_service import BookingService
+                                from models.booking import BookingStatus
+                            except ImportError:
                                 try:
-                                    from database import get_db
-                                    from services.booking_service import BookingService
+                                    from ..database import get_db
+                                    from ..services.booking_service import BookingService
+                                    from ..models.booking import BookingStatus
                                 except ImportError:
-                                    # Fallback to relative import (when running as package)
-                                    try:
-                                        from ..database import get_db
-                                        from ..services.booking_service import BookingService
-                                    except ImportError:
-                                        # Fallback to absolute import (when running from project root)
-                                        from backend.database import get_db
-                                        from backend.services.booking_service import BookingService
+                                    from backend.database import get_db
+                                    from backend.services.booking_service import BookingService
+                                    from backend.models.booking import BookingStatus
+                            
+                            db = next(get_db())
+                            booking_service = BookingService(db, self)
+                            
+                            # Try to find pending booking by email and date
+                            webhook_email = booking_data.get("patient_email", "")
+                            webhook_date = booking_data.get("date", "")
+                            
+                            if webhook_email:
+                                pending_db_bookings = booking_service.get_booking_by_email(
+                                    webhook_email,
+                                    status=BookingStatus.PENDING
+                                )
                                 
-                                db = next(get_db())
-                                booking_service = BookingService(db, self)
-                                
-                                # Update booking in database
+                                # Match by date if available
+                                if pending_db_bookings:
+                                    for pdb in pending_db_bookings:
+                                        if not webhook_date or pdb.date == webhook_date:
+                                            db_booking_id = pdb.id
+                                            matched_booking_id = pdb.id
+                                            print(f"✅ Auto-matched webhook to database booking {pdb.id} by email and date")
+                                            break
+                            
+                            db.close()
+                        except Exception as e:
+                            print(f"⚠️  Error auto-matching webhook: {e}")
+                    
+                    # Update database booking automatically
+                    if matched_booking_id or db_booking_id:
+                        booking_id_to_update = matched_booking_id or db_booking_id
+                        try:
+                            try:
+                                from database import get_db
+                                from services.booking_service import BookingService
+                            except ImportError:
+                                try:
+                                    from ..database import get_db
+                                    from ..services.booking_service import BookingService
+                                except ImportError:
+                                    from backend.database import get_db
+                                    from backend.services.booking_service import BookingService
+                            
+                            db = next(get_db())
+                            booking_service = BookingService(db, self)
+                            
+                            # Update booking in database using the booking ID
+                            # First try to get the booking by ID
+                            db_booking = booking_service.get_booking_by_id(booking_id_to_update)
+                            
+                            if db_booking:
+                                # Update using the update_booking_from_webhook method
                                 updated_booking = booking_service.update_booking_from_webhook(
                                     event_uri=event_uri,
                                     invitee_uri=invitee_uri,
@@ -1720,26 +1802,51 @@ class CalendlyClient:
                                 
                                 if updated_booking:
                                     # Update booking_data with database ID
-                                    booking_data["db_booking_id"] = updated_booking.id
-                                    booking_data["booking_id"] = matched_temp_id  # Keep temp ID for frontend compatibility
-                                    booking_data["temp_booking_id"] = matched_temp_id  # Keep temp ID for reference
+                                    booking_data["booking_id"] = updated_booking.id  # Use database UUID
                                     booking_data["confirmation_code"] = updated_booking.confirmation_code
                                     booking_data["appointment_type"] = updated_booking.appointment_type
                                     booking_data["date"] = updated_booking.date
                                     booking_data["time"] = updated_booking.start_time
                                     booking_data["status"] = "confirmed"  # Ensure status is set
-                                    print(f"✅ Database booking {updated_booking.id} confirmed via webhook (TEMP ID: {matched_temp_id})")
+                                    print(f"✅ Database booking {updated_booking.id} automatically confirmed via webhook")
                                     print(f"   Status updated to: confirmed")
                                     print(f"   Event URI: {event_uri}")
                                     print(f"   Invitee URI: {invitee_uri}")
+                                    
+                                    # Remove from pending (keep in database)
+                                    if updated_booking.id in self.pending_bookings:
+                                        del self.pending_bookings[updated_booking.id]
+                                    print(f"✅ Moved booking {updated_booking.id} from pending to confirmed")
+                            else:
+                                # If booking not found by ID, try update_booking_from_webhook which matches by email
+                                updated_booking = booking_service.update_booking_from_webhook(
+                                    event_uri=event_uri,
+                                    invitee_uri=invitee_uri,
+                                    start_time=start_time,
+                                    end_time=end_time,
+                                    patient_name=booking_data.get("patient_name", ""),
+                                    patient_email=booking_data.get("patient_email", ""),
+                                    patient_phone=booking_data.get("patient_phone", "")
+                                )
                                 
-                                db.close()
-                            except Exception as e:
-                                print(f"⚠️  Could not update database booking: {e}")
-                        
-                        # Remove from pending (keep in database)
-                        del self.pending_bookings[matched_temp_id]
-                        print(f"✅ Moved booking {matched_temp_id} from pending to confirmed")
+                                if updated_booking:
+                                    booking_data["booking_id"] = updated_booking.id
+                                    booking_data["confirmation_code"] = updated_booking.confirmation_code
+                                    booking_data["appointment_type"] = updated_booking.appointment_type
+                                    booking_data["date"] = updated_booking.date
+                                    booking_data["time"] = updated_booking.start_time
+                                    booking_data["status"] = "confirmed"
+                                    print(f"✅ Database booking {updated_booking.id} automatically confirmed via webhook (matched by email)")
+                                    
+                                    # Remove from pending
+                                    if updated_booking.id in self.pending_bookings:
+                                        del self.pending_bookings[updated_booking.id]
+                            
+                            db.close()
+                        except Exception as e:
+                            print(f"⚠️  Could not automatically update database booking: {e}")
+                            import traceback
+                            traceback.print_exc()
                     else:
                         print(f"⚠️  Webhook received but no pending booking found for email: {booking_data.get('patient_email')}")
                         print(f"   Pending bookings: {list(self.pending_bookings.keys())}")
@@ -1961,9 +2068,10 @@ class CalendlyClient:
                     print(f"   ✅ Found in mock_bookings")
                     return booking
         
-        # Check database FIRST for TEMP bookings or regular bookings (before checking in-memory)
+        # Check database FIRST for bookings (before checking in-memory)
         # This ensures persistence across server restarts and gets the most up-to-date status
-        if booking_id.startswith("TEMP-") or len(booking_id) == 36:  # UUID format
+        # Booking IDs are now UUIDs from database (36 characters)
+        if len(booking_id) == 36:  # UUID format
             try:
                 # Try direct import first (when running from backend/ directory)
                 try:
@@ -1985,43 +2093,13 @@ class CalendlyClient:
                 db = next(get_db())
                 booking_service = BookingService(db, self)
                 
-                # Try to find by ID (UUID) first
+                # Try to find by ID (UUID)
                 db_booking = booking_service.get_booking_by_id(booking_id)
-                
-                # If not found and it's a TEMP ID, try multiple lookup strategies
-                if not db_booking and booking_id.startswith("TEMP-"):
-                    # Strategy 1: Search by TEMP ID in extra_data
-                    db_booking = booking_service.get_booking_by_temp_id(booking_id)
-                    
-                    # Strategy 2: Extract confirmation code from pending booking if available
-                    if not db_booking and booking_id in self.pending_bookings:
-                        pending = self.pending_bookings[booking_id]
-                        conf_code = pending.get("db_confirmation_code") or pending.get("confirmation_code")
-                        if conf_code:
-                            db_booking = booking_service.get_booking_by_confirmation_code(conf_code)
-                    
-                    # Strategy 3: Find by email and date/time match
-                    if not db_booking and booking_id in self.pending_bookings:
-                        pending = self.pending_bookings[booking_id]
-                        email = pending.get("patient_email")
-                        if email:
-                            # Get pending bookings by email
-                            pending_db_bookings = booking_service.get_booking_by_email(email, status=BookingStatus.PENDING)
-                            if pending_db_bookings:
-                                # Find the one that matches our temp booking by date/time
-                                for pdb in pending_db_bookings:
-                                    # Check if it matches by date/time
-                                    if (pdb.date == pending.get("date") and 
-                                        pdb.start_time == pending.get("start_time")):
-                                        db_booking = pdb
-                                        break
                 
                 if db_booking:
                     booking_dict = db_booking.to_dict()
-                    # Add temp_booking_id if it was a TEMP booking
-                    if booking_id.startswith("TEMP-"):
-                        booking_dict["temp_booking_id"] = booking_id
-                        booking_dict["booking_id"] = booking_id  # Keep original ID for compatibility
+                    # Ensure booking_id is set to database UUID
+                    booking_dict["booking_id"] = db_booking.id
                     
                     # Ensure status is properly set
                     booking_dict["status"] = db_booking.status
@@ -2031,8 +2109,6 @@ class CalendlyClient:
                         booking_dict["time"] = db_booking.start_time
                     
                     print(f"   ✅ Found in database (ID: {db_booking.id}, Status: {db_booking.status})")
-                    if booking_id.startswith("TEMP-"):
-                        print(f"   📝 Returning with TEMP ID: {booking_id} for frontend compatibility")
                     db.close()
                     return booking_dict
                 
@@ -2055,14 +2131,7 @@ class CalendlyClient:
             )
             return booking
         
-        # Check real bookings by temp_booking_id field
-        for event_uri, booking in self.real_bookings.items():
-            temp_id = booking.get("temp_booking_id") or booking.get("booking_id")
-            if temp_id == booking_id:
-                print(f"   ✅ Found in real_bookings by temp_booking_id: {event_uri}")
-                return booking
-        
-        # Check real bookings by booking_id field
+        # Check real bookings by booking_id field (database UUID)
         for event_uri, booking in self.real_bookings.items():
             if booking.get("booking_id") == booking_id:
                 print(f"   ✅ Found in real_bookings by booking_id: {event_uri}")
@@ -2208,11 +2277,195 @@ class CalendlyClient:
                 return None
                 
         except httpx.HTTPStatusError as e:
-            print(f"❌ Error fetching booking from Calendly: HTTP {e.response.status_code}")
+            status_code = e.response.status_code
+            if status_code == 429:
+                print(f"⚠️  Calendly API rate limit hit (429). Skipping invitee lookup.")
+                print(f"   This is normal when polling frequently. Webhook will update booking automatically.")
+                return None
+            print(f"❌ Error fetching booking from Calendly: HTTP {status_code}")
             print(f"   Response: {e.response.text[:200]}")
             return None
         except Exception as e:
-            print(f"❌ Error fetching booking by invitee ID: {str(e)}")
+            error_str = str(e)
+            if "429" in error_str or "rate limit" in error_str.lower():
+                print(f"⚠️  Calendly API rate limit hit. Skipping invitee lookup.")
+                return None
+            print(f"❌ Error fetching booking by invitee ID: {error_str}")
+            return None
+    
+    async def sync_booking_by_email(self, patient_email: str, booking_date: str = None) -> Optional[Dict[str, Any]]:
+        """
+        Manually sync a booking by searching Calendly API for events matching email and date
+        This is useful when webhook is delayed or missed
+        """
+        if not self.api_key:
+            print("⚠️  Cannot sync booking: API key not configured")
+            return None
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                # Get current user
+                user_response = await client.get(
+                    "https://api.calendly.com/users/me",
+                    headers=headers
+                )
+                user_response.raise_for_status()
+                user_data = user_response.json()
+                user_uri = user_data["resource"]["uri"]
+                
+                # Get recent scheduled events (last 7 days, or specific date range)
+                from datetime import timedelta
+                if booking_date:
+                    # Parse booking_date (YYYY-MM-DD) and search around that date
+                    try:
+                        target_date = datetime.strptime(booking_date, "%Y-%m-%d")
+                        start_time = (target_date - timedelta(days=1)).isoformat() + "Z"
+                        end_time = (target_date + timedelta(days=1)).isoformat() + "Z"
+                    except:
+                        start_time = (datetime.now() - timedelta(days=7)).isoformat() + "Z"
+                        end_time = datetime.now().isoformat() + "Z"
+                else:
+                    start_time = (datetime.now() - timedelta(days=7)).isoformat() + "Z"
+                    end_time = datetime.now().isoformat() + "Z"
+                
+                events_response = await client.get(
+                    "https://api.calendly.com/scheduled_events",
+                    headers=headers,
+                    params={
+                        "user": user_uri,
+                        "min_start_time": start_time,
+                        "max_start_time": end_time,
+                        "count": 50
+                    }
+                )
+                events_response.raise_for_status()
+                events_data = events_response.json()
+                
+                patient_email_lower = patient_email.lower().strip()
+                
+                # Search for invitee matching email
+                for event in events_data.get("collection", []):
+                    event_uri = event["uri"]
+                    
+                    # Get invitees for this event
+                    invitees_response = await client.get(
+                        f"{event_uri}/invitees",
+                        headers=headers
+                    )
+                    
+                    if invitees_response.status_code == 200:
+                        invitees_data = invitees_response.json()
+                        for invitee in invitees_data.get("collection", []):
+                            invitee_email = invitee.get("email", "").lower().strip()
+                            
+                            # Check if email matches
+                            if invitee_email == patient_email_lower:
+                                # Found matching booking! Build booking data
+                                invitee_uri = invitee["uri"]
+                                invitee_id = invitee_uri.split("/")[-1]
+                                
+                                start_time_str = event.get("start_time", "")
+                                end_time_str = event.get("end_time", "")
+                                event_type_uri = event.get("event_type", "")
+                                event_type_uuid = event_type_uri.split("/")[-1] if event_type_uri else ""
+                                
+                                # Parse dates
+                                start_dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00")) if start_time_str else None
+                                
+                                booking_data = {
+                                    "booking_id": invitee_id,
+                                    "calendly_event_uri": event_uri,
+                                    "calendly_invitee_uri": invitee_uri,
+                                    "event_type_uuid": event_type_uuid,
+                                    "start_time": start_time_str,
+                                    "end_time": end_time_str,
+                                    "date": start_dt.strftime("%Y-%m-%d") if start_dt else "",
+                                    "time": start_dt.strftime("%H:%M") if start_dt else "",
+                                    "patient_name": invitee.get("name", ""),
+                                    "patient_email": invitee.get("email", ""),
+                                    "patient_phone": invitee.get("phone_number", ""),
+                                    "status": "confirmed",
+                                    "confirmed_at": invitee.get("created_at", datetime.now().isoformat()),
+                                    "synced_from_calendly": True
+                                }
+                                
+                                # Try to match with pending booking
+                                for booking_id_key, pending in list(self.pending_bookings.items()):
+                                    pending_email = pending.get("patient_email", "").lower().strip()
+                                    if pending_email == patient_email_lower:
+                                        # Check if date matches
+                                        if booking_date and booking_data.get("date") == booking_date:
+                                            booking_data.update({
+                                                "booking_id": booking_id_key,  # Use database UUID
+                                                "confirmation_code": pending.get("confirmation_code", ""),
+                                                "appointment_type": pending.get("appointment_type", ""),
+                                                "reason": pending.get("reason", "")
+                                            })
+                                            # Move from pending to confirmed
+                                            del self.pending_bookings[booking_id_key]
+                                            print(f"✅ Matched and synced booking {booking_id_key} from pending to confirmed")
+                                        
+                                        # Also update database if exists
+                                        try:
+                                            try:
+                                                from database import get_db
+                                                from services.booking_service import BookingService
+                                                from models.booking import BookingStatus
+                                            except ImportError:
+                                                try:
+                                                    from ..database import get_db
+                                                    from ..services.booking_service import BookingService
+                                                    from ..models.booking import BookingStatus
+                                                except ImportError:
+                                                    from backend.database import get_db
+                                                    from backend.services.booking_service import BookingService
+                                                    from backend.models.booking import BookingStatus
+                                            
+                                            db = next(get_db())
+                                            booking_service = BookingService(db, self)
+                                            
+                                            # Find pending booking by email and date
+                                            pending_db_bookings = booking_service.get_booking_by_email(patient_email, status=BookingStatus.PENDING)
+                                            for pdb in pending_db_bookings:
+                                                if pdb.date == booking_date or (not booking_date and pdb.date == booking_data.get("date")):
+                                                    # Update to confirmed
+                                                    pdb.status = BookingStatus.CONFIRMED.value
+                                                    pdb.calendly_event_uri = booking_data["calendly_event_uri"]
+                                                    pdb.calendly_invitee_uri = booking_data["calendly_invitee_uri"]
+                                                    pdb.confirmed_at = datetime.now()
+                                                    db.commit()
+                                                    print(f"   ✅ Updated database booking {pdb.id} to confirmed")
+                                                    break
+                                            
+                                            db.close()
+                                        except Exception as db_error:
+                                            print(f"   ⚠️  Database update error: {db_error}")
+                                
+                                # Store in real bookings
+                                self.real_bookings[event_uri] = booking_data
+                                
+                                print(f"✅ Synced booking from Calendly API:")
+                                print(f"   Patient: {booking_data['patient_name']} ({booking_data['patient_email']})")
+                                print(f"   Date: {booking_data.get('date')} at {booking_data.get('time')}")
+                                
+                                return booking_data
+                
+                print(f"⚠️  No booking found in Calendly for email: {patient_email}, date: {booking_date}")
+                return None
+                
+        except httpx.HTTPStatusError as e:
+            print(f"❌ Error syncing booking from Calendly: HTTP {e.response.status_code}")
+            print(f"   Response: {e.response.text[:200]}")
+            return None
+        except Exception as e:
+            print(f"❌ Error syncing booking by email: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def get_webhook_logs(self, limit: int = 50) -> List[Dict[str, Any]]:

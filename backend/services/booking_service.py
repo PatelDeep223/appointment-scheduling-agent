@@ -137,6 +137,12 @@ class BookingService:
             query = query.filter(Booking.status == status.value)
         return query.order_by(Booking.created_at.desc()).all()
     
+    def get_all_pending_bookings(self, limit: int = 50) -> List[Booking]:
+        """Get all pending bookings from database"""
+        return self.db.query(Booking).filter(
+            Booking.status == BookingStatus.PENDING.value
+        ).order_by(Booking.created_at.desc()).limit(limit).all()
+    
     def update_booking_from_webhook(
         self,
         event_uri: str,
