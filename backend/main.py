@@ -430,77 +430,6 @@ async def book_appointment(request: AppointmentRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/calendly/book")
-async def calendly_book(request: BookingRequest):
-    """
-    Mock Calendly API endpoint for booking appointments
-    
-    This endpoint matches the mock Calendly API specification:
-    - POST /api/calendly/book
-    - Body: JSON with appointment_type, date, start_time, patient (name, email, phone), reason
-    
-    Args:
-        request: BookingRequest with booking details:
-        {
-            "appointment_type": "consultation",
-            "date": "2024-01-15",
-            "start_time": "10:00",
-            "patient": {
-                "name": "John Doe",
-                "email": "john@example.com",
-                "phone": "+1-555-0100"
-            },
-            "reason": "Annual checkup"
-        }
-    
-    Returns:
-        JSON response with booking confirmation:
-        {
-            "booking_id": "APPT-2024-001",
-            "status": "confirmed",
-            "confirmation_code": "ABC123",
-            "details": {...}
-        }
-    """
-    try:
-        # Create booking using Calendly client
-        booking = await calendly_client.create_booking(
-            appointment_type=request.appointment_type,
-            date=request.date,
-            start_time=request.start_time,
-            patient_name=request.patient.name,
-            patient_email=request.patient.email,
-            patient_phone=request.patient.phone,
-            reason=request.reason
-        )
-        
-        # Transform to match the mock API format from the image
-        return {
-            "booking_id": booking.get("booking_id", ""),
-            "status": booking.get("status", "confirmed"),
-            "confirmation_code": booking.get("confirmation_code", ""),
-            "details": {
-                "appointment_type": booking.get("appointment_type", ""),
-                "date": booking.get("date", ""),
-                "start_time": booking.get("start_time", ""),
-                "end_time": booking.get("end_time", ""),
-                "duration": booking.get("duration", 30),
-                "patient_name": booking.get("patient_name", ""),
-                "patient_email": booking.get("patient_email", ""),
-                "patient_phone": booking.get("patient_phone", ""),
-                "reason": booking.get("reason", ""),
-                "scheduling_link": booking.get("scheduling_link", ""),
-                "clinic_info": booking.get("clinic_info", {}),
-                "created_at": booking.get("created_at", "")
-            }
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"❌ Error in /api/calendly/book: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.delete("/api/appointments/{booking_id}")
 async def cancel_appointment(booking_id: str):
     """Cancel an appointment"""
@@ -873,46 +802,6 @@ async def sync_appointment(booking_id: str):
         raise HTTPException(status_code=500, detail=f"Error syncing booking: {str(e)}")
 
 
-@app.get("/api/calendly/webhook/status")
-async def get_webhook_status():
-    """
-    Get webhook configuration status and statistics
-    
-    Returns:
-        Webhook status, statistics, and recent events
-    """
-    try:
-        return calendly_client.get_webhook_status()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/calendly/webhook/logs")
-async def get_webhook_logs(limit: int = 50):
-    """
-    Get recent webhook event logs
-    
-    Args:
-        limit: Maximum number of logs to return (default: 50, max: 100)
-    
-    Returns:
-        List of webhook event logs
-    """
-    try:
-        if limit > 100:
-            limit = 100
-        if limit < 1:
-            limit = 50
-        logs = calendly_client.get_webhook_logs(limit=limit)
-        return {
-            "logs": logs,
-            "count": len(logs),
-            "total_logs": len(calendly_client.webhook_logs)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/api/faq/search")
 async def search_faq(query: str):
     """
@@ -927,41 +816,6 @@ async def search_faq(query: str):
     try:
         results = await faq_retriever.search(query, top_k=3)
         return {"results": results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/system-prompt/{session_id}")
-async def get_system_prompt(session_id: str):
-    """
-    Get the current system prompt being used for a session
-    
-    Args:
-        session_id: Session identifier
-    
-    Returns:
-        Current system prompt information
-    """
-    try:
-        if session_id not in sessions:
-            return {
-                "session_id": session_id,
-                "system_prompt_type": "main_agent",
-                "message": "Session not found. Default prompt will be used."
-            }
-        
-        session = sessions[session_id]
-        use_smooth = session.get("use_smooth_prompt", False)
-        current_prompt = session.get("current_system_prompt", "")
-        
-        prompt_type = "smooth_conversation" if use_smooth else "main_agent"
-        
-        return {
-            "session_id": session_id,
-            "system_prompt_type": prompt_type,
-            "use_smooth_prompt": use_smooth,
-            "prompt_preview": current_prompt[:200] + "..." if len(current_prompt) > 200 else current_prompt
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
