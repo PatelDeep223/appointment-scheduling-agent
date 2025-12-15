@@ -217,8 +217,8 @@ TESTING_GUIDE.md
 assessment.txt
 SETUP_INSTRUCTIONS.md
 test_backend.py
-
-
+backend/data/
+backend/data/vectordb/635a6cee-bd51-4a59-8f53-0688e417725f/length.bin
 # Frontend / Next.js
 frontend/node_modules/
 frontend/.next/
@@ -235,3 +235,8 @@ frontend/next-env.d.ts
 
 frontend/TROUBLESHOOTING.md
 frontend/README.md
+
+ngrok
+ngrok-v3-stable-linux-amd64.tgz
+
+data/vectordb/

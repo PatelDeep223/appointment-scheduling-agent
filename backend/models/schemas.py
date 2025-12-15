@@ -66,6 +66,7 @@ class ChatResponse(BaseModel):
     context: str
     suggestions: Optional[List[str]] = []
     appointment_details: Optional[Dict[str, Any]] = None
+    available_slots: Optional[List[Dict[str, Any]]] = None  # Structured slot data for UI
 
 # Appointment request/response schemas (for direct booking)
 class AppointmentRequest(BaseModel):
