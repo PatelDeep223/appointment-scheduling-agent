@@ -43,7 +43,7 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
       
       const isPending = appointmentDetails.status === 'pending' || 
                        appointmentDetails.status === 'ready' ||
-                       appointmentDetails.booking_id?.startsWith('TEMP-')
+                       appointmentDetails.status === 'pending'
       
       if (!isPending && !isWaitingForConfirmation) {
         // Booking is confirmed, stop polling
@@ -63,27 +63,35 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
           return
         }
         
-        // Update if status changed from pending to confirmed
+        // Validate response is an object (not HTML)
+        if (typeof updatedBooking !== 'object' || updatedBooking === null) {
+          console.error('[Polling] Invalid response format:', typeof updatedBooking)
+          return
+        }
+        
+        // Always update appointmentDetails with latest data to keep UI in sync
+        if (updatedBooking) {
+          setAppointmentDetails(updatedBooking)
+        }
+        
+        // Check if status changed from pending to confirmed
         const wasPending = appointmentDetails.status === 'pending' || 
-                          appointmentDetails.status === 'ready' ||
-                          appointmentDetails.booking_id?.startsWith('TEMP-')
+                          appointmentDetails.status === 'ready'
         const isNowConfirmed = updatedBooking && 
-                               updatedBooking.status === 'confirmed' && 
-                               !updatedBooking.booking_id?.startsWith('TEMP-')
+                             updatedBooking.status === 'confirmed'
         
         // Check if this is a direct booking (immediately confirmed, no scheduling_link)
         const isDirectBooking = isNowConfirmed && !updatedBooking.scheduling_link
         
         if (wasPending && isNowConfirmed) {
-          // Booking just got confirmed!
-          setAppointmentDetails(updatedBooking)
+          // Booking just got confirmed via webhook!
           setIsWaitingForConfirmation(false)
-          console.log('✅ Booking confirmed!', updatedBooking)
+          console.log('✅ Booking confirmed via webhook!', updatedBooking)
           
           // Show success message
           const bookingMethod = isDirectBooking 
             ? 'Your appointment was booked directly and is confirmed!'
-            : 'Your appointment has been confirmed!'
+            : 'Your appointment has been confirmed via webhook!'
           
           const successMessage: ChatMessageType = {
             role: 'assistant',
@@ -100,13 +108,12 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
         } else if (updatedBooking && updatedBooking.status !== appointmentDetails.status) {
           // Status changed (e.g., pending -> confirmed)
           console.log(`📊 Booking status changed: ${appointmentDetails.status} → ${updatedBooking.status}`)
-          setAppointmentDetails(updatedBooking)
           
           // If it became confirmed, show success message
-          if (updatedBooking.status === 'confirmed' && appointmentDetails.status === 'pending') {
+          if (updatedBooking.status === 'confirmed' && wasPending) {
             const successMessage: ChatMessageType = {
               role: 'assistant',
-              content: `🎉 Great news! Your appointment has been confirmed!\n\nYour booking details:\n• Date: ${updatedBooking.date || appointmentDetails.date}\n• Time: ${updatedBooking.time || appointmentDetails.time}\n• Confirmation Code: ${updatedBooking.confirmation_code || appointmentDetails.confirmation_code}\n\nYou should receive a confirmation email shortly.`,
+              content: `🎉 Great news! Your appointment has been confirmed via webhook!\n\nYour booking details:\n• Date: ${updatedBooking.date || appointmentDetails.date}\n• Time: ${updatedBooking.time || appointmentDetails.time}\n• Confirmation Code: ${updatedBooking.confirmation_code || appointmentDetails.confirmation_code}\n\nYou should receive a confirmation email shortly.`,
               timestamp: new Date().toISOString(),
             }
             setMessages((prev) => [...prev, successMessage])
@@ -119,8 +126,9 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
             }
           }
         } else {
-          // Status hasn't changed, just log for debugging
-          console.log(`📊 Booking status unchanged: ${updatedBooking.status} (still ${appointmentDetails.status === 'pending' ? 'waiting for confirmation' : 'confirmed'})`)
+          // Status hasn't changed, but log polling activity
+          const statusText = updatedBooking?.status === 'pending' ? 'waiting for webhook confirmation' : 'confirmed'
+          console.log(`📊 Polling: Status is "${updatedBooking?.status}" (${statusText})`)
         }
       } catch (error) {
         // Silently fail - booking might not exist yet or webhook hasn't arrived
@@ -128,21 +136,21 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
       }
     }
 
-    // Determine polling interval based on whether user is actively completing booking
-    const pollInterval = isWaitingForConfirmation ? 3000 : 5000 // Poll every 3s if waiting, 5s otherwise
+    // Determine polling interval - more aggressive when waiting for confirmation
+    // Poll every 2s if user is actively completing booking, 3s for pending bookings
+    const pollInterval = isWaitingForConfirmation ? 2000 : 3000
 
-    // Poll for pending bookings
+    // Poll for pending bookings - automatically detect webhook updates
     if (appointmentDetails?.booking_id) {
       const isPending = appointmentDetails.status === 'pending' || 
-                       appointmentDetails.status === 'ready' ||
-                       appointmentDetails.booking_id?.startsWith('TEMP-')
+                       appointmentDetails.status === 'ready'
       
       if (isPending || isWaitingForConfirmation) {
-        // Initial check after 2 seconds (faster if waiting)
-        const initialDelay = isWaitingForConfirmation ? 2000 : 3000
+        // Initial check after 1 second (faster to detect webhook updates)
+        const initialDelay = isWaitingForConfirmation ? 1000 : 2000
         const initialTimeout = setTimeout(checkBookingStatus, initialDelay)
         
-        // Then poll at appropriate interval
+        // Then poll at appropriate interval to catch webhook confirmations
         pollingIntervalRef.current = setInterval(checkBookingStatus, pollInterval)
         
         return () => {
@@ -195,7 +203,10 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
       setMessages((prev) => [...prev, assistantMessage])
 
       // Update appointment details and available slots (suggestions removed)
-      setAppointmentDetails(response.appointment_details || null)
+      // Only update appointmentDetails if new booking is created, don't clear existing ones
+      if (response.appointment_details) {
+        setAppointmentDetails(response.appointment_details)
+      }
       setAvailableSlots(response.available_slots || [])
     } catch (error: any) {
       const errorMessage: ChatMessageType = {
@@ -305,8 +316,26 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
             {appointmentDetails && (
               <AppointmentConfirmation 
                 appointmentDetails={appointmentDetails}
-                onBookingComplete={() => {
-                  // Start aggressive polling when user opens booking page
+                onBookingComplete={(updatedBooking?: any) => {
+                  // If updated booking is provided (from sync), use it directly
+                  if (updatedBooking) {
+                    console.log('📥 Received updated booking from sync:', updatedBooking)
+                    setAppointmentDetails(updatedBooking)
+                    setIsWaitingForConfirmation(false)
+                    
+                    // Show success message if confirmed
+                    if (updatedBooking.status === 'confirmed') {
+                      const successMessage: ChatMessageType = {
+                        role: 'assistant',
+                        content: `🎉 Great news! Your appointment has been confirmed!\n\nYour booking details:\n• Date: ${updatedBooking.date || appointmentDetails.date}\n• Time: ${updatedBooking.time || appointmentDetails.time}\n• Confirmation Code: ${updatedBooking.confirmation_code || appointmentDetails.confirmation_code}\n\nYou should receive a confirmation email shortly.`,
+                        timestamp: new Date().toISOString(),
+                      }
+                      setMessages((prev) => [...prev, successMessage])
+                    }
+                    return
+                  }
+                  
+                  // Otherwise, start aggressive polling when user opens booking page
                   setIsWaitingForConfirmation(true)
                   
                   // Also refresh booking status immediately
@@ -315,6 +344,10 @@ const FloatingChatWidget = forwardRef<FloatingChatWidgetRef>((props, ref) => {
                       .then(updated => {
                         if (updated) {
                           setAppointmentDetails(updated)
+                          // If confirmed, stop waiting
+                          if (updated.status === 'confirmed') {
+                            setIsWaitingForConfirmation(false)
+                          }
                         }
                       })
                       .catch(err => console.debug('Error refreshing booking:', err))

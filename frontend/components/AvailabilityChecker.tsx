@@ -44,11 +44,37 @@ export default function AvailabilityChecker({ onSlotSelect }: AvailabilityChecke
     setAvailability(null)
 
     try {
-      const response = await apiService.getAvailability(
-        selectedDate,
-        appointmentType,
-        timePreference || undefined
-      )
+      // Try Calendly API endpoint first, fallback to regular availability endpoint
+      let response: AvailabilityResponse
+      
+      try {
+        // Use Calendly availability API (direct Calendly API call)
+        const calendlyResponse = await apiService.getCalendlyAvailability(
+          selectedDate,
+          appointmentType
+        )
+        
+        // Transform Calendly response to AvailabilityResponse format
+        response = {
+          date: calendlyResponse.date,
+          appointment_type: appointmentType,
+          available_slots: calendlyResponse.available_slots.map(slot => ({
+            start_time: slot.start_time,
+            end_time: slot.end_time,
+            available: slot.available,
+            raw_time: slot.start_time // Use start_time as raw_time
+          }))
+        }
+      } catch (calendlyError: any) {
+        console.warn('Calendly availability API failed, falling back to regular endpoint:', calendlyError)
+        // Fallback to regular availability endpoint
+        response = await apiService.getAvailability(
+          selectedDate,
+          appointmentType,
+          timePreference || undefined
+        )
+      }
+      
       setAvailability(response)
     } catch (err: any) {
       setError(err.message || 'Failed to check availability')

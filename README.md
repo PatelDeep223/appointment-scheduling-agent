@@ -117,31 +117,35 @@ Once the server is running, visit:
 
 ```
 appointment-scheduling-agent/
-├── README.md
-├── .env.example
-├── requirements.txt
+├── README.md 
+├── requirements.txt 
+├── architecture_diagram.pdf 
 ├── backend/
-│   ├── main.py                    # FastAPI application entry point
+│   ├── main.py 
 │   ├── agent/
-│   │   ├── scheduling_agent.py    # Main conversational agent
-│   │   └── prompts.py             # System prompts and templates
+│   │   ├── scheduling_agent.py 
+│   │   ├── prompts.py 
+│   │   └── llm_service.py 
 │   ├── rag/
-│   │   ├── faq_rag.py            # FAQ RAG system
-│   │   ├── embeddings.py          # Embedding utilities
-│   │   └── vector_store.py        # Vector database wrapper
+│   │   ├── faq_rag.py 
+│   │   ├── embeddings.py
+│   │   └── vector_store.py 
 │   ├── api/
-│   │   ├── chat.py               # Chat endpoint handlers
-│   │   └── calendly_integration.py # Calendly API client
+│   │   ├── chat.py 
+│   │   └── calendly_integration.py 
 │   ├── tools/
-│   │   ├── availability_tool.py  # Availability checking tool
-│   │   └── booking_tool.py       # Booking management tool
-│   └── models/
-│       └── schemas.py            # Pydantic data models
+│   │   ├── availability_tool.py 
+│   │   └── booking_tool.py 
+│   ├── models/
+│   │   └── schemas.py 
+│   ├── services/ 
+│   ├── database.py 
+│   └── scripts/ 
 ├── data/
-│   ├── clinic_info.json          # FAQ knowledge base data
-│   └── doctor_schedule.json      # Doctor schedule configuration
-└── tests/
-    └── test_agent.py             # Test cases
+│   ├── clinic_info.json 
+│   └── doctor_schedule.json 
+├── frontend/ 
+└── tests/ 
 ```
 
 ## 🎯 System Design

@@ -20,7 +20,7 @@ interface AppointmentConfirmationProps {
     duration_minutes?: number
     [key: string]: any
   }
-  onBookingComplete?: () => void
+  onBookingComplete?: (updatedBooking?: any) => void
 }
 
 export default function AppointmentConfirmation({
@@ -29,16 +29,20 @@ export default function AppointmentConfirmation({
 }: AppointmentConfirmationProps) {
   const [autoOpened, setAutoOpened] = useState(false)
   const [isCompleting, setIsCompleting] = useState(false)
+  const [lastChecked, setLastChecked] = useState<Date>(new Date())
+
+  // Update last checked time when status changes
+  useEffect(() => {
+    setLastChecked(new Date())
+  }, [appointmentDetails?.status])
 
   if (!appointmentDetails || (!appointmentDetails.booking_id && !appointmentDetails.confirmation_code)) {
     return null
   }
 
   const isPending = appointmentDetails.status === 'pending' || 
-                   appointmentDetails.status === 'ready' ||
-                   appointmentDetails.booking_id?.startsWith('TEMP-')
-  const isConfirmed = appointmentDetails.status === 'confirmed' && 
-                      !appointmentDetails.booking_id?.startsWith('TEMP-')
+                   appointmentDetails.status === 'ready'
+  const isConfirmed = appointmentDetails.status === 'confirmed'
   
   const title = isPending 
     ? 'Appointment Ready to Book!' 
@@ -189,9 +193,23 @@ export default function AppointmentConfirmation({
                     {isCompleting && (
                       <div className="mt-2 flex items-center gap-2 text-xs text-blue-700">
                         <Loader2 className="animate-spin" size={14} />
-                        <span>Waiting for booking confirmation...</span>
+                        <span>Waiting for automatic booking confirmation via webhook...</span>
                       </div>
                     )}
+                    <div className="mt-2 space-y-1 p-2 bg-blue-50 rounded border border-blue-200">
+                      <p className="text-xs text-blue-800">
+                        📋 <strong>Status:</strong> Waiting for you to complete booking in Calendly
+                      </p>
+                      <p className="text-xs text-blue-800">
+                        🔄 <strong>Auto-Update:</strong> Checking every 2-3 seconds for webhook confirmation
+                      </p>
+                      <p className="text-xs text-blue-800">
+                        ✉️ <strong>Webhook:</strong> Once you complete the booking, Calendly will automatically send a webhook to confirm your appointment
+                      </p>
+                      <p className="text-xs text-blue-700 mt-1">
+                        ⏱️ Last checked: {lastChecked.toLocaleTimeString()}
+                      </p>
+                    </div>
                   </>
                 ) : (
                   <>
